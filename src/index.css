@@ -1,0 +1,119 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --cursor-title: #323233;
+  --cursor-sidebar: #252526;
+  --cursor-editor: #1e1e1e;
+  --cursor-border: #3c3c3c;
+  /* Neutral gray for panel/modal edges (no blue cast, matches sidebar tone) */
+  --cursor-panel-border: #383838;
+  --cursor-hover: #2a2d2e;
+  --cursor-selected: #e67a44;
+  --cursor-text: #cccccc;
+  --cursor-text-muted: #8a898c;
+  --cursor-accent: #ff914d;
+  --cursor-dropdown: #252526;
+  /* Minimal: flat elevation, tight radius */
+  --shadow-bar: 0 1px 0 rgba(0, 0, 0, 0.2);
+  --shadow-dropdown: 0 2px 8px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  --shadow-modal: 0 8px 24px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 5px;
+  --radius-xl: 6px;
+  --transition-fast: 120ms ease;
+  --transition-normal: 150ms ease;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --cursor-title: #e0e0e0;
+  --cursor-sidebar: #f3f3f3;
+  --cursor-editor: #ffffff;
+  --cursor-border: #e0e0e0;
+  --cursor-panel-border: #d4d4d4;
+  --cursor-hover: #e8e8e8;
+  --cursor-selected: #ffe6cc;
+  --cursor-text: #333333;
+  --cursor-text-muted: #6e6e6e;
+  --cursor-accent: #cc633a;
+  --cursor-dropdown: #f3f3f3;
+  --shadow-bar: 0 1px 0 rgba(0, 0, 0, 0.06);
+  --shadow-dropdown: 0 2px 8px rgba(0, 0, 0, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --shadow-modal: 0 8px 24px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.05);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Visible focus for keyboard users (WCAG 2.4.7) */
+:where(a, button, input, select, textarea, [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 1px solid var(--cursor-text-muted);
+  outline-offset: 1px;
+}
+
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 0.5rem;
+  z-index: 9999;
+  padding: 0.5rem 0.75rem;
+  background: var(--cursor-accent);
+  color: #000;
+  font-size: 0.875rem;
+  text-decoration: none;
+  border-radius: 4px;
+  transition: top 0.15s ease;
+}
+.skip-link:focus {
+  top: 0.5rem;
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background: var(--cursor-editor);
+  color: var(--cursor-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* CodeMirror 6: fill container, allow shrink for responsive panel resizing (Cursor-like) */
+.cm-editor {
+  height: 100%;
+  min-width: 0; /* allow center panel to shrink when sidebars expand */
+  background: var(--cursor-editor) !important;
+}
+.cm-scroller {
+  min-height: 100%;
+  min-width: 0;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background: var(--cursor-editor) !important;
+}
+.cm-content {
+  background: var(--cursor-editor) !important;
+}
+
+/* Terminal: minimal, high-density; matches editor background */
+.terminal-view .xterm {
+  padding: 0;
+}
+.terminal-view .xterm-viewport {
+  background: var(--cursor-editor) !important;
+}
+.terminal-view .xterm-screen {
+  background: var(--cursor-editor) !important;
+}

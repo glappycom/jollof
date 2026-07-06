@@ -1,0 +1,6 @@
+# Cargo network resilience for first Tauri build.
+# If index.crates.io DNS fails, copy config.github-mirror.toml over this file.
+
+[net]
+retry = 10
+git-fetch-with-cli = true

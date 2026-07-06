@@ -1,0 +1,25 @@
+# Jollof IDE on a single host (e.g. DigitalOcean Droplet)
+# Usage: docker compose up -d --build
+#
+# Put Nginx/Caddy in front for HTTPS and proxy:
+#   /        -> localhost:8080  (static UI)
+#   /api/    -> localhost:31337
+#   /pty     -> localhost:31337  (WebSocket upgrade)
+
+services:
+  jollof:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "31337:31337"
+    environment:
+      JOLLOF_PORT: "31337"
+      STATIC_PORT: "8080"
+      JOLLOF_CWD: /app
+    volumes:
+      # Optional: mount a host workspace for Git/terminal inside the container
+      - jollof-workspace:/app/workspace
+
+volumes:
+  jollof-workspace:

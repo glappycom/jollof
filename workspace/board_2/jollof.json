@@ -1,0 +1,9 @@
+{
+  "board_id": 2,
+  "recipe": "bookings",
+  "recipe_meta": {
+    "name": "bookings",
+    "variant": "bookings_v1"
+  },
+  "generated_at": "2026-01-16T03:47:52.893970+00:00"
+}
