@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Start jollof-server only if nothing is listening on the local port.
- * Lets `npm run tauri:dev` coexist with an existing `npm run dev` session.
+ * Lets `npm run dev` / `tauri:dev` coexist with an existing session.
  */
 
 import { spawn } from "child_process";
@@ -23,14 +23,31 @@ async function isServerUp() {
   }
 }
 
-if (await isServerUp()) {
-  console.log(`Jollof local server already running on port ${PORT} — reusing it.`);
-  // Keep this process alive so concurrently does not treat it as exited.
-  await new Promise(() => {});
-} else {
+function waitForShutdown() {
+  return new Promise((resolve) => {
+    const done = () => resolve();
+    process.once("SIGTERM", done);
+    process.once("SIGINT", done);
+  });
+}
+
+async function main() {
+  if (await isServerUp()) {
+    console.log(`Jollof local server already running on port ${PORT} - reusing it.`);
+    await waitForShutdown();
+    return;
+  }
+
   const child = spawn(process.execPath, [serverPath], {
     stdio: "inherit",
     env: process.env,
   });
   child.on("exit", (code) => process.exit(code ?? 1));
+  await waitForShutdown();
+  child.kill("SIGTERM");
 }
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

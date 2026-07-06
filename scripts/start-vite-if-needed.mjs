@@ -23,10 +23,21 @@ async function isViteUp() {
   }
 }
 
-if (await isViteUp()) {
-  console.log(`Vite dev server already running on port ${PORT} — reusing it.`);
-  await new Promise(() => {});
-} else {
+function waitForShutdown() {
+  return new Promise((resolve) => {
+    const done = () => resolve();
+    process.once("SIGTERM", done);
+    process.once("SIGINT", done);
+  });
+}
+
+async function main() {
+  if (await isViteUp()) {
+    console.log(`Vite dev server already running on port ${PORT} - reusing it.`);
+    await waitForShutdown();
+    return;
+  }
+
   const viteBin = path.join(root, "node_modules", "vite", "bin", "vite.js");
   const child = spawn(process.execPath, [viteBin], {
     stdio: "inherit",
@@ -34,4 +45,11 @@ if (await isViteUp()) {
     cwd: root,
   });
   child.on("exit", (code) => process.exit(code ?? 1));
+  await waitForShutdown();
+  child.kill("SIGTERM");
 }
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
