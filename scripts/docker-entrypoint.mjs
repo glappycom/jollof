@@ -59,7 +59,9 @@ const serverProc = spawn(process.execPath, [path.join(root, "server", "jollof-se
 
 serverProc.on("exit", (code) => {
   console.error(`jollof-server exited with ${code}`);
-  process.exit(code ?? 1);
+  if (code !== 0) {
+    console.error("API/terminal unavailable; static UI may still work on port", staticPort);
+  }
 });
 
 process.on("SIGTERM", () => serverProc.kill("SIGTERM"));
