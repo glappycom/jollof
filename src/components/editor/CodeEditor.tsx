@@ -4,8 +4,8 @@ import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { search, searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { indentUnit } from "@codemirror/language";
-import { javascript } from "@codemirror/lang-javascript";
 import { oneDark } from "@codemirror/theme-one-dark";
+import { languageSupportForPath } from "@/lib/language";
 
 /** Minimal light theme for the editor (VS Code–style). */
 const oneLightTheme = EditorView.theme({
@@ -21,6 +21,8 @@ const oneLightTheme = EditorView.theme({
 
 interface CodeEditorProps {
   content?: string;
+  /** File path for language detection (e.g. src/App.tsx). */
+  filePath?: string;
   onChange?: (value: string) => void;
   className?: string;
   fontSize?: number;
@@ -36,6 +38,7 @@ interface CodeEditorProps {
 
 const CodeEditor = ({
   content = "",
+  filePath = "",
   onChange,
   className = "",
   fontSize = 14,
@@ -52,6 +55,7 @@ const CodeEditor = ({
 
     const editorTheme = theme === "light" ? oneLightTheme : oneDark;
     const spaces = " ".repeat(Math.max(1, Math.min(8, tabSize)));
+    const lang = languageSupportForPath(filePath);
 
     const startState = EditorState.create({
       doc: content,
@@ -63,7 +67,7 @@ const CodeEditor = ({
         keymap.of(searchKeymap),
         search(),
         highlightSelectionMatches(),
-        javascript(),
+        ...(lang ? [lang] : []),
         EditorState.tabSize.of(tabSize),
         indentUnit.of(spaces),
         editorTheme,
@@ -99,7 +103,8 @@ const CodeEditor = ({
       view.destroy();
       viewRef.current = null;
     };
-  }, [registerView, onSelectionChange, theme, fontSize, tabSize]); // remount when theme/font/tabSize change
+    // Remount when language (path), theme, font, or tab size change
+  }, [registerView, onSelectionChange, theme, fontSize, tabSize, filePath]);
 
   // Sync external content changes (e.g. open different file) without remounting
   useEffect(() => {

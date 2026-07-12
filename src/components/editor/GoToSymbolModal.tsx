@@ -13,6 +13,8 @@ const kindLabel: Record<SymbolKind, string> = {
   function: "function",
   class: "class",
   variable: "var",
+  interface: "interface",
+  type: "type",
 };
 
 export default function GoToSymbolModal({

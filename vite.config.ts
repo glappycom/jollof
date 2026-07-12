@@ -38,9 +38,9 @@ export default defineConfig({
         manualChunks(id) {
           if (id.includes("node_modules")) {
             if (id.includes("@codemirror")) return "codemirror";
+            if (id.includes("typescript") && !id.includes("typescript-eslint")) return "typescript";
             if (id.includes("@xterm")) return "xterm";
             if (id.includes("@radix-ui")) return "radix";
-            if (id.includes("acorn")) return "acorn";
             if (id.includes("react-resizable-panels")) return "panels";
           }
         },

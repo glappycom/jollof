@@ -1,10 +1,12 @@
 /**
- * Outline/symbols for Go to Symbol (Ctrl+Shift+O). Uses Acorn for JS/TS-like files.
+ * Outline/symbols for Go to Symbol (Ctrl+Shift+O).
+ * Uses TypeScript AST for JS/TS (including interfaces & types).
  */
 
-import * as acorn from "acorn";
+import ts from "typescript";
+import { extensionOf } from "@/lib/language";
 
-export type SymbolKind = "function" | "class" | "variable";
+export type SymbolKind = "function" | "class" | "variable" | "interface" | "type";
 
 export interface SymbolEntry {
   name: string;
@@ -12,87 +14,99 @@ export interface SymbolEntry {
   line: number;
 }
 
-const JS_EXT = new Set([".js", ".mjs", ".cjs", ".jsx"]);
+const TS_JS_EXT = new Set([
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+]);
 
-function hasJSExt(path: string): boolean {
-  const i = path.lastIndexOf(".");
-  return i >= 0 && JS_EXT.has(path.slice(i).toLowerCase());
+function scriptKindForPath(path: string): ts.ScriptKind {
+  const ext = extensionOf(path);
+  if (ext === ".tsx") return ts.ScriptKind.TSX;
+  if (ext === ".jsx") return ts.ScriptKind.JSX;
+  if (ext === ".ts" || ext === ".mts" || ext === ".cts") return ts.ScriptKind.TS;
+  return ts.ScriptKind.JS;
 }
 
-function getLineFromNode(node: acorn.Node): number {
-  const loc = (node as acorn.Node & { loc?: { start: { line: number } } }).loc;
-  return loc?.start?.line ?? 1;
+function lineOf(node: ts.Node, sf: ts.SourceFile): number {
+  return sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
 }
 
-function getNameFromNode(node: acorn.Node): string | null {
-  const n = node as acorn.Node & { id?: { name: string }; key?: { name: string }; name?: string };
-  if (n.id && "name" in n.id) return n.id.name;
-  if (n.key && "name" in n.key) return n.key.name;
-  if (n.name) return n.name;
-  return null;
+function pushVarNames(
+  decl: ts.VariableDeclarationList,
+  sf: ts.SourceFile,
+  out: SymbolEntry[]
+) {
+  for (const d of decl.declarations) {
+    if (ts.isIdentifier(d.name)) {
+      out.push({ name: d.name.text, kind: "variable", line: lineOf(d, sf) });
+    }
+  }
 }
 
 /**
- * Extract top-level symbols (functions, classes, exported/const declarations) for outline.
- * Returns empty array for non-JS or on parse error.
+ * Extract top-level symbols for outline. Empty for non-JS/TS or on error.
  */
 export function getSymbols(path: string, content: string): SymbolEntry[] {
-  if (!hasJSExt(path)) return [];
+  if (!TS_JS_EXT.has(extensionOf(path))) return [];
 
+  const fileName = path.replace(/\\/g, "/").split("/").pop() || "file.ts";
   try {
-    const ast = acorn.parse(content, {
-      ecmaVersion: "latest",
-      sourceType: "module",
-      locations: true,
-      allowHashBang: true,
-      allowAwaitOutsideFunction: true,
-    }) as acorn.Node & { body?: acorn.Node[] };
-
+    const sf = ts.createSourceFile(
+      fileName,
+      content,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKindForPath(path)
+    );
     const symbols: SymbolEntry[] = [];
-    const body = ast.body;
-    if (!Array.isArray(body)) return symbols;
 
-    for (const node of body) {
-      const line = getLineFromNode(node);
-      const type = node.type as string;
+    const visit = (node: ts.Node) => {
+      if (ts.isFunctionDeclaration(node) && node.name) {
+        symbols.push({ name: node.name.text, kind: "function", line: lineOf(node, sf) });
+        return;
+      }
+      if (ts.isClassDeclaration(node) && node.name) {
+        symbols.push({ name: node.name.text, kind: "class", line: lineOf(node, sf) });
+        return;
+      }
+      if (ts.isInterfaceDeclaration(node)) {
+        symbols.push({ name: node.name.text, kind: "interface", line: lineOf(node, sf) });
+        return;
+      }
+      if (ts.isTypeAliasDeclaration(node)) {
+        symbols.push({ name: node.name.text, kind: "type", line: lineOf(node, sf) });
+        return;
+      }
+      if (ts.isVariableStatement(node)) {
+        pushVarNames(node.declarationList, sf, symbols);
+        return;
+      }
+      if (ts.isExportAssignment(node)) return;
+      if (ts.isExportDeclaration(node)) return;
+    };
 
-      if (type === "FunctionDeclaration") {
-        const name = getNameFromNode(node);
-        if (name) symbols.push({ name, kind: "function", line });
+    for (const stmt of sf.statements) {
+      if (ts.isExportDeclaration(stmt) || ts.isImportDeclaration(stmt)) continue;
+      if (
+        ts.isFunctionDeclaration(stmt) ||
+        ts.isClassDeclaration(stmt) ||
+        ts.isInterfaceDeclaration(stmt) ||
+        ts.isTypeAliasDeclaration(stmt) ||
+        ts.isVariableStatement(stmt)
+      ) {
+        visit(stmt);
         continue;
       }
-      if (type === "ClassDeclaration") {
-        const name = getNameFromNode(node);
-        if (name) symbols.push({ name, kind: "class", line });
-        continue;
-      }
-      if (type === "VariableDeclaration") {
-        const decl = node as acorn.Node & { declarations: acorn.Node[] };
-        for (const d of decl.declarations || []) {
-          const id = (d as acorn.Node & { id: acorn.Node }).id;
-          const name = id && "name" in id ? (id as { name: string }).name : null;
-          if (name) symbols.push({ name, kind: "variable", line: getLineFromNode(d) });
-        }
-        continue;
-      }
-      if (type === "ExportNamedDeclaration" || type === "ExportDefaultDeclaration") {
-        const decl = node as acorn.Node & { declaration?: acorn.Node };
-        const inner = decl.declaration;
-        if (!inner) continue;
-        const innerType = inner.type as string;
-        if (innerType === "FunctionDeclaration" || innerType === "ClassDeclaration") {
-          const name = getNameFromNode(inner);
-          if (name) symbols.push({ name, kind: innerType === "ClassDeclaration" ? "class" : "function", line: getLineFromNode(inner) });
-        }
-        if (innerType === "VariableDeclaration") {
-          const v = inner as acorn.Node & { declarations: acorn.Node[] };
-          for (const d of v.declarations || []) {
-            const id = (d as acorn.Node & { id: acorn.Node }).id;
-            const name = id && "name" in id ? (id as { name: string }).name : null;
-            if (name) symbols.push({ name, kind: "variable", line: getLineFromNode(d) });
-          }
-        }
-      }
+      // export default / export { } with declaration
+      if (ts.isExportAssignment(stmt)) continue;
+      // `export function` etc. are still FunctionDeclaration with modifiers
+      visit(stmt);
     }
 
     return symbols;

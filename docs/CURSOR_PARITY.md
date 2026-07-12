@@ -26,12 +26,12 @@ Last updated: 2026-07-12
 
 | Capability | Status | Notes |
 |------------|--------|-------|
-| Syntax highlighting | 🟡 | JavaScript only |
+| Syntax highlighting | ✅ | JS/TS/JSX/TSX, JSON, HTML, CSS, Markdown, Python by extension |
 | Find / replace in editor | ✅ | CodeMirror search |
 | Go to line | ✅ | Ctrl+G |
-| Go to symbol | 🟡 | Basic symbol list |
-| Multi-language support | ⬜ | JSON, TS, Python, etc. |
-| LSP / IntelliSense | ⬜ | — |
+| Go to symbol | ✅ | Ctrl+Shift+O — TS AST (functions, classes, interfaces, types, vars) |
+| Multi-language support | ✅ | Sprint 2 — lang map in `src/lib/language.ts` |
+| LSP / IntelliSense | 🟡 | Sprint 2 — TS syntactic diagnostics + symbols; full LSP deferred |
 | Tab completion (Copilot++) | ⬜ | — |
 | Inline edit (Cmd+K) | ✅ | Ctrl+K modal; `jollof-inline` accept/reject |
 | Split editor | ⬜ | — |
@@ -79,10 +79,10 @@ Last updated: 2026-07-12
 
 | Capability | Status | Notes |
 |------------|--------|-------|
-| Problems panel | 🟡 | JS syntax via Acorn |
-| Next / previous problem (F8) | ⬜ | — |
+| Problems panel | ✅ | TS/JS syntactic via TypeScript LS; JSON.parse for `.json` |
+| Next / previous problem (F8) | ✅ | Wired to Problems list |
 | Output panel | ✅ | Context + append |
-| ESLint / TS diagnostics | ⬜ | — |
+| ESLint / TS diagnostics | 🟡 | Syntactic TS; semantic/project + ESLint deferred |
 
 ---
 

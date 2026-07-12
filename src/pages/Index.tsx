@@ -30,6 +30,7 @@ import {
 import { getRecentFolders, addRecentFolder, type RecentFolderEntry } from "@/lib/recent-folders";
 import { getDiagnostics, type ProblemEntry } from "@/lib/diagnostics";
 import { getSymbols } from "@/lib/symbols";
+import { languageLabelForPath } from "@/lib/language";
 import { streamAgentResponse } from "@/lib/agent-api";
 import { parseInlineEditFromResponse } from "@/lib/agent-edits";
 import { normalizeAgentPath } from "@/lib/agent-workspace";
@@ -1885,6 +1886,7 @@ const Index = () => {
                         <CodeEditor
                           key={activeFile.id}
                           content={activeFile.content}
+                          filePath={activeFile.path ?? activeFile.name}
                           onChange={handleEditorChange}
                           className="h-full min-h-0 min-w-0 w-full overflow-auto text-sm"
                           fontSize={settings.fontSize}
@@ -1906,7 +1908,7 @@ const Index = () => {
                 <PanelTabs
                   active={activePanelTab}
                   onSelect={setActivePanelTab}
-                  problemCount={0}
+                  problemCount={problems.length}
                   onClosePanel={closeBottomPanel}
                   onMaximizePanel={maximizeBottomPanel}
                   onRestorePanel={restoreBottomPanel}
@@ -1983,6 +1985,7 @@ const Index = () => {
                         <CodeEditor
                           key={activeFile.id}
                           content={activeFile.content}
+                          filePath={activeFile.path ?? activeFile.name}
                           onChange={handleEditorChange}
                           className="h-full min-h-0 min-w-0 w-full overflow-auto text-sm"
                           fontSize={settings.fontSize}
@@ -2019,7 +2022,7 @@ const Index = () => {
                 <PanelTabs
                   active={activePanelTab}
                   onSelect={setActivePanelTab}
-                  problemCount={0}
+                  problemCount={problems.length}
                   onClosePanel={closeBottomPanel}
                   onMaximizePanel={maximizeBottomPanel}
                   onRestorePanel={restoreBottomPanel}
@@ -2108,6 +2111,11 @@ const Index = () => {
       <StatusBar
         branch="main"
         encoding="UTF-8"
+        language={
+          activeFile
+            ? languageLabelForPath(activeFile.path ?? activeFile.name)
+            : undefined
+        }
         position={activeFile ? editorPosition : null}
       />
     </div>
