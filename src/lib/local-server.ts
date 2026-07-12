@@ -1,6 +1,22 @@
 export const DEFAULT_LOCAL_SERVER_URL = "http://localhost:31337";
 export const DEFAULT_TERMINAL_WS_URL = "ws://localhost:31337/pty";
 
+/** When the UI is served from a remote host (e.g. Droplet), point APIs at that host. */
+export function inferServerUrlsFromLocation(): {
+  localServerUrl: string;
+  terminalWsUrl: string;
+} | null {
+  if (typeof window === "undefined") return null;
+  const host = window.location.hostname;
+  if (!host || host === "localhost" || host === "127.0.0.1") return null;
+  const protocol = window.location.protocol === "https:" ? "https" : "http";
+  const wsProtocol = protocol === "https" ? "wss" : "ws";
+  return {
+    localServerUrl: `${protocol}://${host}:31337`,
+    terminalWsUrl: `${wsProtocol}://${host}:31337/pty`,
+  };
+}
+
 export function localServerBaseUrl(configured?: string): string {
   const url = (configured || DEFAULT_LOCAL_SERVER_URL).trim().replace(/\/$/, "");
   return url || DEFAULT_LOCAL_SERVER_URL;

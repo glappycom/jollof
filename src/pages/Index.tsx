@@ -42,7 +42,7 @@ import InlineEditModal, { type InlineEditContext } from "@/components/editor/Inl
 import { resolveWorkspaceLocalPath, getWorkspaceLocalPath } from "@/lib/workspace-local-path";
 import { terminalWsUrl } from "@/lib/local-server";
 import { isTauri } from "@/lib/platform";
-import { openDesktopFolder, loadDesktopDirectoryChildren } from "@/lib/desktop-workspace";
+import { openDesktopFolder, loadDesktopDirectoryChildren, openFolderByAbsolutePath } from "@/lib/desktop-workspace";
 import { runWorkspaceCommand } from "@/lib/run-api";
 import { formatRunResultForChat } from "@/lib/agent-runs";
 import { fetchGitStatus } from "@/lib/git-api";
@@ -758,21 +758,66 @@ const Index = () => {
     return () => clearTimeout(t);
   }, [activeFile?.path, activeFile?.content]);
 
+  const applyOpenedFolder = useCallback(
+    (result: {
+      rootName: string;
+      rootHandle: FileSystemDirectoryHandle | null;
+      rootLocalPath: string | null;
+      children: FileTreeNode[];
+    }) => {
+      setWorkspace({
+        rootName: result.rootName,
+        rootHandle: result.rootHandle,
+        rootLocalPath: result.rootLocalPath,
+        topLevelNodes: result.children,
+      });
+      setExpandedPaths(new Set());
+      setChildCache({});
+      if (result.rootLocalPath) {
+        setWorkspaceLocalPathResolved(result.rootLocalPath);
+      }
+    },
+    []
+  );
+
+  const handleOpenFolderByPath = useCallback(async () => {
+    setSidebarVisible(true);
+    const suggested =
+      workspaceLocalPathResolved ||
+      (typeof window !== "undefined" && window.location.hostname !== "localhost"
+        ? "/app"
+        : "C:\\Users\\User\\jollof-ide");
+    const entered = window.prompt(
+      "Enter the absolute folder path on the server (cloud) or your PC (local).",
+      suggested
+    );
+    if (!entered?.trim()) return;
+    try {
+      const result = await openFolderByAbsolutePath(settings.localServerUrl, entered.trim());
+      if (!result) {
+        toast({ title: "Could not open folder", description: "Empty path." });
+        return;
+      }
+      applyOpenedFolder(result);
+      toast({ title: "Folder opened", description: result.rootLocalPath });
+    } catch (err) {
+      toast({
+        title: "Could not open folder",
+        description:
+          err instanceof Error
+            ? err.message
+            : "Check the path and that the local server is reachable (Preferences → Agent / server URL).",
+      });
+    }
+  }, [applyOpenedFolder, settings.localServerUrl, workspaceLocalPathResolved]);
+
   const handleOpenFolder = useCallback(async () => {
     setSidebarVisible(true);
     if (isTauri()) {
       try {
         const result = await openDesktopFolder(settings.localServerUrl);
         if (!result) return;
-        setWorkspace({
-          rootName: result.rootName,
-          rootHandle: null,
-          rootLocalPath: result.rootLocalPath,
-          topLevelNodes: result.children,
-        });
-        setExpandedPaths(new Set());
-        setChildCache({});
-        setWorkspaceLocalPathResolved(result.rootLocalPath);
+        applyOpenedFolder(result);
       } catch (err) {
         toast({
           title: "Could not open folder",
@@ -781,23 +826,36 @@ const Index = () => {
       }
       return;
     }
-    const result = await pickFolder();
-    if (!result) return;
-    setWorkspace({
-      rootName: result.rootName,
-      rootHandle: result.rootHandle,
-      rootLocalPath: null,
-      topLevelNodes: result.children,
-    });
-    setExpandedPaths(new Set());
-    setChildCache({});
-    try {
-      await addRecentFolder(result.rootName, result.rootHandle);
-      setRecentFolders(await getRecentFolders());
-    } catch {
-      // IndexedDB or handle storage may fail
+
+    if (!isFileSystemAccessSupported()) {
+      // Cloud / Firefox / insecure HTTP — fall back to absolute path via server FS API
+      await handleOpenFolderByPath();
+      return;
     }
-  }, [settings.localServerUrl]);
+
+    try {
+      const result = await pickFolder();
+      if (!result) return;
+      applyOpenedFolder({
+        rootName: result.rootName,
+        rootHandle: result.rootHandle,
+        rootLocalPath: null,
+        children: result.children,
+      });
+      try {
+        await addRecentFolder(result.rootName, result.rootHandle);
+        setRecentFolders(await getRecentFolders());
+      } catch {
+        // IndexedDB or handle storage may fail
+      }
+    } catch (err) {
+      if ((err as { name?: string })?.name === "AbortError") return;
+      toast({
+        title: "Could not open folder",
+        description: err instanceof Error ? err.message : "Folder picker failed.",
+      });
+    }
+  }, [applyOpenedFolder, handleOpenFolderByPath, settings.localServerUrl]);
 
   const handleOpenRecentFolder = useCallback(async (entry: RecentFolderEntry) => {
     try {
@@ -1780,13 +1838,9 @@ const Index = () => {
                       message={
                         isFileSystemAccessSupported()
                           ? "No folder opened. Open a folder to browse files."
-                          : "Open folder is supported in Chromium-based browsers (Chrome, Edge)."
+                          : "No secure folder picker here (cloud uses HTTP). Use Open Folder and enter a server path like /app."
                       }
-                      action={
-                        isFileSystemAccessSupported()
-                          ? { label: "Open Folder", onClick: handleOpenFolder }
-                          : undefined
-                      }
+                      action={{ label: "Open Folder", onClick: () => void handleOpenFolder() }}
                       className="flex-1"
                     />
                   ) : (

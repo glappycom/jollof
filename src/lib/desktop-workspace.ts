@@ -28,7 +28,19 @@ export async function openDesktopFolder(
   });
   if (!selected || Array.isArray(selected)) return null;
 
-  const rootLocalPath = selected;
+  return openFolderByAbsolutePath(localServerUrl, selected);
+}
+
+/**
+ * Open a folder by absolute disk path (server FS API). Works on cloud / insecure HTTP.
+ */
+export async function openFolderByAbsolutePath(
+  localServerUrl: string,
+  absolutePath: string
+): Promise<DesktopFolderResult | null> {
+  const rootLocalPath = absolutePath.trim();
+  if (!rootLocalPath) return null;
+
   const rootName = basename(rootLocalPath);
   setWorkspaceLocalPath(rootName, rootLocalPath);
 

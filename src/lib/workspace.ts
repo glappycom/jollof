@@ -17,10 +17,15 @@ export interface FileTreeNode {
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "__pycache__", ".venv"]);
 
 /**
- * Check if the File System Access API is available (Chromium-based browsers).
+ * Check if the File System Access API is available (Chromium + secure context).
+ * Note: http://IP:port is NOT secure — only https:// or http://localhost.
  */
 export function isFileSystemAccessSupported(): boolean {
-  return typeof window !== "undefined" && "showDirectoryPicker" in window;
+  return (
+    typeof window !== "undefined" &&
+    window.isSecureContext &&
+    "showDirectoryPicker" in window
+  );
 }
 
 /**

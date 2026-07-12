@@ -1,6 +1,10 @@
 import { createContext, useContext, useState, useCallback, useEffect } from "react";
 import { loadSettings, saveSettings, type Settings } from "@/lib/settings";
-import { DEFAULT_LOCAL_SERVER_URL, DEFAULT_TERMINAL_WS_URL } from "@/lib/local-server";
+import {
+  DEFAULT_LOCAL_SERVER_URL,
+  DEFAULT_TERMINAL_WS_URL,
+  inferServerUrlsFromLocation,
+} from "@/lib/local-server";
 
 const SettingsContext = createContext<{
   settings: Settings;
@@ -13,8 +17,24 @@ export function useSettings() {
   return ctx;
 }
 
+function withInferredRemoteServers(settings: Settings): Settings {
+  const inferred = inferServerUrlsFromLocation();
+  if (!inferred) return settings;
+  const stillLocalhost =
+    settings.localServerUrl.includes("localhost") ||
+    settings.localServerUrl.includes("127.0.0.1");
+  if (!stillLocalhost) return settings;
+  return {
+    ...settings,
+    localServerUrl: inferred.localServerUrl,
+    terminalWsUrl: inferred.terminalWsUrl,
+  };
+}
+
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
-  const [settings, setSettings] = useState<Settings>(loadSettings);
+  const [settings, setSettings] = useState<Settings>(() =>
+    withInferredRemoteServers(loadSettings())
+  );
 
   useEffect(() => {
     saveSettings(settings);
