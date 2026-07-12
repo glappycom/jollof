@@ -4,7 +4,7 @@ Living tracker for Jollof vs Cursor core capabilities. Update as features ship.
 
 **Legend:** ✅ Done · 🟡 Partial · ⬜ Not started
 
-Last updated: 2026-07-05
+Last updated: 2026-07-12
 
 ---
 
@@ -58,8 +58,8 @@ Last updated: 2026-07-05
 |------------|--------|-------|
 | Terminal panel + tabs | ✅ | xterm.js |
 | Real shell (PTY) | ✅ | Auto-starts with `npm run dev`; ws://localhost:31337/pty |
-| Agent runs commands | ⬜ | Phase C follow-up |
-| Ctrl+K generate command | ⬜ | Placeholder hint only |
+| Agent runs commands | ✅ | Phase D2 — `jollof-run` blocks; Approve → `POST /api/run`; output back in chat |
+| Ctrl+K generate command | 🟡 | Agent proposes `jollof-run`; Run button in chat (not terminal Ctrl+K yet) |
 
 ---
 

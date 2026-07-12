@@ -5,6 +5,7 @@ import type { OpenFile } from "@/components/editor/EditorTabs";
 import type { FileTreeNode } from "@/lib/workspace";
 import { buildAgentContextBlock } from "@/lib/agent-context";
 import { parseEditsFromResponse } from "@/lib/agent-edits";
+import { parseRunsFromResponse } from "@/lib/agent-runs";
 import { streamAgentResponse, type AgentChatMessage } from "@/lib/agent-api";
 import { loadMentionedWorkspaceFiles, hydrateAgentEdits } from "@/lib/agent-workspace";
 import { getFlatFileList, type FlatFileEntry } from "@/lib/workspace";
@@ -144,22 +145,36 @@ export async function runAgentTurn({
           const last = prev.messages.find((m) => m.id === assistantId);
           if (!last?.content) return prev;
           const parsed = parseEditsFromResponse(last.content);
-          if (parsed.length === 0) return prev;
+          const parsedRuns = parseRunsFromResponse(last.content);
+          if (parsed.length === 0 && parsedRuns.length === 0) return prev;
           void (async () => {
-            const hydrated = await hydrateAgentEdits(parsed, {
-              rootName: ctx.workspace?.rootName ?? "",
-              rootHandle: ctx.workspace?.rootHandle ?? null,
-              rootLocalPath: ctx.workspace?.rootLocalPath,
-              localServerUrl: ctx.localServerUrl,
-              flatFileList: flatFiles,
-              openFiles: ctx.openFiles,
-            });
+            const hydrated =
+              parsed.length > 0
+                ? await hydrateAgentEdits(parsed, {
+                    rootName: ctx.workspace?.rootName ?? "",
+                    rootHandle: ctx.workspace?.rootHandle ?? null,
+                    rootLocalPath: ctx.workspace?.rootLocalPath,
+                    localServerUrl: ctx.localServerUrl,
+                    flatFileList: flatFiles,
+                    openFiles: ctx.openFiles,
+                  })
+                : [];
+            const cwd = ctx.workspace?.rootLocalPath || undefined;
+            const pendingCommands = parsedRuns.map((r) => ({
+              ...r,
+              cwd,
+              status: "pending" as const,
+            }));
             setSession((p) => {
               if (!p) return p;
               const msgs = [...p.messages];
               const idx = msgs.findIndex((m) => m.id === assistantId);
               if (idx === -1) return p;
-              msgs[idx] = { ...msgs[idx], pendingEdits: hydrated };
+              msgs[idx] = {
+                ...msgs[idx],
+                ...(hydrated.length ? { pendingEdits: hydrated } : {}),
+                ...(pendingCommands.length ? { pendingCommands } : {}),
+              };
               return { ...p, messages: msgs };
             });
           })();

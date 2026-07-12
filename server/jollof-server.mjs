@@ -10,7 +10,7 @@
  */
 
 import http from "http";
-import { execFile } from "child_process";
+import { execFile, spawn } from "child_process";
 import { promisify } from "util";
 import path from "path";
 import fs from "fs";
@@ -99,6 +99,58 @@ function listDirectoryEntries(cwd, rel, rootName) {
     return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
   });
   return nodes;
+}
+
+const MAX_RUN_OUTPUT = 200_000;
+
+function runShellCommand(command, workDir, timeoutMs) {
+  return new Promise((resolve) => {
+    const isWin = process.platform === "win32";
+    const child = spawn(isWin ? "cmd.exe" : "bash", isWin ? ["/c", command] : ["-lc", command], {
+      cwd: workDir,
+      env: process.env,
+      windowsHide: true,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let killed = false;
+    const timer = setTimeout(() => {
+      killed = true;
+      try {
+        child.kill();
+      } catch {}
+    }, timeoutMs);
+
+    child.stdout?.on("data", (chunk) => {
+      if (stdout.length < MAX_RUN_OUTPUT) stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk) => {
+      if (stderr.length < MAX_RUN_OUTPUT) stderr += chunk.toString();
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({
+        ok: false,
+        exitCode: 1,
+        stdout,
+        stderr: stderr || err.message,
+        timedOut: false,
+        cwd: workDir,
+      });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({
+        ok: !killed && code === 0,
+        exitCode: killed ? 124 : code ?? 1,
+        stdout: stdout.slice(0, MAX_RUN_OUTPUT),
+        stderr: stderr.slice(0, MAX_RUN_OUTPUT),
+        timedOut: killed,
+        cwd: workDir,
+      });
+    });
+  });
 }
 
 async function runGit(args, cwd) {
@@ -261,6 +313,25 @@ async function handleGitApi(req, res, url) {
       return;
     }
 
+    if (url.pathname === "/api/run" && req.method === "POST") {
+      const body = await readBody(req);
+      const cwd = body.cwd || DEFAULT_CWD;
+      const command = String(body.command || "").trim();
+      const timeoutMs = Math.min(Number(body.timeoutMs) || 60_000, 5 * 60_000);
+      if (!command) {
+        sendJson(res, 400, { error: "command required" });
+        return;
+      }
+      if (command.length > 4000) {
+        sendJson(res, 400, { error: "command too long" });
+        return;
+      }
+      const workDir = resolveCwd(cwd);
+      const result = await runShellCommand(command, workDir, timeoutMs);
+      sendJson(res, 200, result);
+      return;
+    }
+
     sendJson(res, 404, { error: "Not found" });
   } catch (err) {
     sendJson(res, 500, { error: err.message || "Server error" });
@@ -370,5 +441,6 @@ server.listen(PORT, () => {
   console.log(`  PTY:  ws://localhost:${PORT}/pty`);
   console.log(`  Git:  http://localhost:${PORT}/api/git/status?cwd=...`);
   console.log(`  FS:   http://localhost:${PORT}/api/fs/list?cwd=...`);
+  console.log(`  Run:  POST http://localhost:${PORT}/api/run`);
   console.log(`  CWD:  ${DEFAULT_CWD}`);
 });

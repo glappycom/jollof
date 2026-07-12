@@ -1,4 +1,5 @@
 import { AGENT_EDIT_SYSTEM_APPEND } from "@/lib/agent-edits";
+import { AGENT_RUN_SYSTEM_APPEND } from "@/lib/agent-runs";
 
 export const INLINE_EDIT_SYSTEM_APPEND = `
 
@@ -31,12 +32,12 @@ When responding:
 - Use markdown for structure: headers, bold, lists, code blocks.
 - When the user attaches images, you can see them.
 - When the user @-mentions files, selection, or @codebase, use the workspace context below their message.
-${AGENT_EDIT_SYSTEM_APPEND}${projectRules}`;
+${AGENT_EDIT_SYSTEM_APPEND}${AGENT_RUN_SYSTEM_APPEND}${projectRules}`;
 }
 
 export function buildComposerSystemPrompt(projectRules = ""): string {
   return `You are Jollof IDE Composer — a Cursor-class multi-file coding agent.
-${COMPOSER_SYSTEM_APPEND}${AGENT_EDIT_SYSTEM_APPEND}${projectRules}`;
+${COMPOSER_SYSTEM_APPEND}${AGENT_EDIT_SYSTEM_APPEND}${AGENT_RUN_SYSTEM_APPEND}${projectRules}`;
 }
 
 export function buildInlineEditSystemPrompt(projectRules = ""): string {

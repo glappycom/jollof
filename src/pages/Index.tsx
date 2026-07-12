@@ -42,6 +42,8 @@ import { resolveWorkspaceLocalPath, getWorkspaceLocalPath } from "@/lib/workspac
 import { terminalWsUrl } from "@/lib/local-server";
 import { isTauri } from "@/lib/platform";
 import { openDesktopFolder, loadDesktopDirectoryChildren } from "@/lib/desktop-workspace";
+import { runWorkspaceCommand } from "@/lib/run-api";
+import { formatRunResultForChat } from "@/lib/agent-runs";
 import { fetchGitStatus } from "@/lib/git-api";
 import QuickOpen from "@/components/quick-open/QuickOpen";
 import SearchPanel from "@/components/search/SearchPanel";
@@ -470,6 +472,142 @@ const Index = () => {
   const handleRejectComposerEdit = useCallback(
     (messageId: string, editId: string) => rejectEdit(setActiveComposer, messageId, editId),
     [rejectEdit]
+  );
+
+  const updateCommandInSession = useCallback(
+    (
+      setSession: React.Dispatch<React.SetStateAction<{ id: string; name: string; messages: AgentMessage[] } | null>>,
+      messageId: string,
+      commandId: string,
+      patch: Partial<NonNullable<AgentMessage["pendingCommands"]>[number]>
+    ) => {
+      setSession((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          messages: prev.messages.map((m) =>
+            m.id !== messageId
+              ? m
+              : {
+                  ...m,
+                  pendingCommands: m.pendingCommands?.map((c) =>
+                    c.id === commandId ? { ...c, ...patch } : c
+                  ),
+                }
+          ),
+        };
+      });
+    },
+    []
+  );
+
+  const applyAcceptCommand = useCallback(
+    async (
+      session: { messages: AgentMessage[] } | null,
+      setSession: React.Dispatch<React.SetStateAction<{ id: string; name: string; messages: AgentMessage[] } | null>>,
+      messageId: string,
+      commandId: string
+    ) => {
+      if (!session) return;
+      const msg = session.messages.find((m) => m.id === messageId);
+      const cmd = msg?.pendingCommands?.find((c) => c.id === commandId);
+      if (!cmd || cmd.status !== "pending") return;
+
+      const cwd =
+        cmd.cwd ||
+        workspace?.rootLocalPath ||
+        workspaceLocalPathResolved ||
+        getWorkspaceLocalPath(workspace?.rootName ?? "") ||
+        null;
+
+      if (!cwd) {
+        toast({
+          title: "Cannot run command",
+          description: "Open a folder and set the workspace path (Source Control) so the shell has a cwd.",
+        });
+        return;
+      }
+
+      updateCommandInSession(setSession, messageId, commandId, { status: "running", cwd });
+
+      try {
+        const result = await runWorkspaceCommand(settings.localServerUrl, cwd, cmd.command);
+        const nextStatus = result.ok ? ("accepted" as const) : ("failed" as const);
+        const updated = {
+          status: nextStatus,
+          exitCode: result.exitCode,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          timedOut: result.timedOut,
+          cwd: result.cwd,
+        };
+        updateCommandInSession(setSession, messageId, commandId, updated);
+
+        const resultMsg: AgentMessage = {
+          id: crypto.randomUUID(),
+          role: "user",
+          content: formatRunResultForChat({ ...cmd, ...updated }),
+        };
+        setSession((prev) =>
+          prev ? { ...prev, messages: [...prev.messages, resultMsg] } : null
+        );
+
+        toast({
+          title: result.ok ? "Command finished" : "Command failed",
+          description: `Exit ${result.exitCode}${result.timedOut ? " (timed out)" : ""}`,
+        });
+      } catch (err) {
+        const error = err instanceof Error ? err.message : "Run failed";
+        updateCommandInSession(setSession, messageId, commandId, {
+          status: "failed",
+          error,
+          exitCode: 1,
+        });
+        toast({ title: "Could not run command", description: error });
+      }
+    },
+    [
+      settings.localServerUrl,
+      updateCommandInSession,
+      workspace?.rootLocalPath,
+      workspace?.rootName,
+      workspaceLocalPathResolved,
+    ]
+  );
+
+  const rejectCommand = useCallback(
+    (
+      setSession: React.Dispatch<React.SetStateAction<{ id: string; name: string; messages: AgentMessage[] } | null>>,
+      messageId: string,
+      commandId: string
+    ) => {
+      updateCommandInSession(setSession, messageId, commandId, { status: "rejected" });
+    },
+    [updateCommandInSession]
+  );
+
+  const handleAcceptAgentCommand = useCallback(
+    (messageId: string, commandId: string) => {
+      void applyAcceptCommand(activeAgent, setActiveAgent, messageId, commandId);
+    },
+    [activeAgent, applyAcceptCommand]
+  );
+
+  const handleAcceptComposerCommand = useCallback(
+    (messageId: string, commandId: string) => {
+      void applyAcceptCommand(activeComposer, setActiveComposer, messageId, commandId);
+    },
+    [activeComposer, applyAcceptCommand]
+  );
+
+  const handleRejectAgentCommand = useCallback(
+    (messageId: string, commandId: string) => rejectCommand(setActiveAgent, messageId, commandId),
+    [rejectCommand]
+  );
+
+  const handleRejectComposerCommand = useCallback(
+    (messageId: string, commandId: string) => rejectCommand(setActiveComposer, messageId, commandId),
+    [rejectCommand]
   );
 
   const closeInlineEdit = useCallback(() => {
@@ -1716,6 +1854,8 @@ const Index = () => {
                     isStreaming={composerStreaming}
                     onAcceptEdit={handleAcceptComposerEdit}
                     onRejectEdit={handleRejectComposerEdit}
+                    onAcceptCommand={handleAcceptComposerCommand}
+                    onRejectCommand={handleRejectComposerCommand}
                   />
                 ) : activeAgent ? (
                   <AgentChatView
@@ -1729,6 +1869,8 @@ const Index = () => {
                     onViewAllPastChats={() => setRightSidebarVisible(true)}
                     onAcceptEdit={handleAcceptAgentEdit}
                     onRejectEdit={handleRejectAgentEdit}
+                    onAcceptCommand={handleAcceptAgentCommand}
+                    onRejectCommand={handleRejectAgentCommand}
                   />
                 ) : (
                   <>
@@ -1810,6 +1952,8 @@ const Index = () => {
                     isStreaming={composerStreaming}
                     onAcceptEdit={handleAcceptComposerEdit}
                     onRejectEdit={handleRejectComposerEdit}
+                    onAcceptCommand={handleAcceptComposerCommand}
+                    onRejectCommand={handleRejectComposerCommand}
                   />
                 ) : activeAgent ? (
                   <AgentChatView
@@ -1823,6 +1967,8 @@ const Index = () => {
                     onViewAllPastChats={() => setRightSidebarVisible(true)}
                     onAcceptEdit={handleAcceptAgentEdit}
                     onRejectEdit={handleRejectAgentEdit}
+                    onAcceptCommand={handleAcceptAgentCommand}
+                    onRejectCommand={handleRejectAgentCommand}
                   />
                 ) : (
                   <>

@@ -5,7 +5,9 @@ import { X, Send, Image, Plus, ChevronDown, Infinity, ListTodo, Bug, MessageCirc
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import AgentEditBlock, { type AgentFileEdit } from "@/components/agents/AgentEditBlock";
+import AgentRunBlock from "@/components/agents/AgentRunBlock";
 import { stripEditBlocksFromDisplay } from "@/lib/agent-edits";
+import { stripRunBlocksFromDisplay, type AgentCommand } from "@/lib/agent-runs";
 
 const markdownComponents: Components = {
   p: ({ children }: { children?: ReactNode }) => <p className="mb-2 last:mb-0">{children}</p>,
@@ -32,6 +34,8 @@ export interface AgentMessage {
   images?: string[];
   /** Assistant messages: proposed file edits awaiting accept/reject */
   pendingEdits?: AgentFileEdit[];
+  /** Assistant messages: proposed shell commands awaiting approve/run */
+  pendingCommands?: AgentCommand[];
 }
 
 export interface ActiveAgent {
@@ -73,6 +77,8 @@ interface AgentChatViewProps {
   onViewAllPastChats?: () => void;
   onAcceptEdit?: (messageId: string, editId: string) => void;
   onRejectEdit?: (messageId: string, editId: string) => void;
+  onAcceptCommand?: (messageId: string, commandId: string) => void;
+  onRejectCommand?: (messageId: string, commandId: string) => void;
   /** chat = Agent panel; composer = multi-file Composer */
   variant?: "chat" | "composer";
 }
@@ -104,6 +110,8 @@ export default function AgentChatView({
   onViewAllPastChats,
   onAcceptEdit,
   onRejectEdit,
+  onAcceptCommand,
+  onRejectCommand,
   variant = "chat",
 }: AgentChatViewProps) {
   const isComposer = variant === "composer";
@@ -230,14 +238,14 @@ export default function AgentChatView({
               {m.role === "assistant" ? (
                 <div className="[&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
                   {(() => {
-                    const display = stripEditBlocksFromDisplay(m.content);
+                    const display = stripRunBlocksFromDisplay(stripEditBlocksFromDisplay(m.content));
                     return display ? (
                       <ReactMarkdown components={markdownComponents}>{display}</ReactMarkdown>
-                    ) : m.pendingEdits?.length ? null : isStreaming && agent.messages[agent.messages.length - 1]?.id === m.id ? (
+                    ) : m.pendingEdits?.length || m.pendingCommands?.length ? null : isStreaming && agent.messages[agent.messages.length - 1]?.id === m.id ? (
                       <p className="text-xs text-cursor-text-muted italic">Thinking...</p>
                     ) : null;
                   })()}
-                  {!m.content && !m.pendingEdits?.length && isStreaming && agent.messages[agent.messages.length - 1]?.id === m.id ? (
+                  {!m.content && !m.pendingEdits?.length && !m.pendingCommands?.length && isStreaming && agent.messages[agent.messages.length - 1]?.id === m.id ? (
                     <p className="text-xs text-cursor-text-muted italic">Thinking...</p>
                   ) : null}
                   {m.pendingEdits?.map((edit) => (
@@ -246,6 +254,14 @@ export default function AgentChatView({
                       edit={edit}
                       onAccept={() => onAcceptEdit?.(m.id, edit.id)}
                       onReject={() => onRejectEdit?.(m.id, edit.id)}
+                    />
+                  ))}
+                  {m.pendingCommands?.map((cmd) => (
+                    <AgentRunBlock
+                      key={cmd.id}
+                      command={cmd}
+                      onAccept={() => onAcceptCommand?.(m.id, cmd.id)}
+                      onReject={() => onRejectCommand?.(m.id, cmd.id)}
                     />
                   ))}
                 </div>
