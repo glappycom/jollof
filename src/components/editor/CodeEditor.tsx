@@ -5,7 +5,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { search, searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { indentUnit } from "@codemirror/language";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { languageSupportForPath } from "@/lib/language";
+import { languageSupportForPath, commentLanguageDataForPath } from "@/lib/language";
 
 /** Minimal light theme for the editor (VS Code–style). */
 const oneLightTheme = EditorView.theme({
@@ -24,6 +24,8 @@ interface CodeEditorProps {
   /** File path for language detection (e.g. src/App.tsx). */
   filePath?: string;
   onChange?: (value: string) => void;
+  /** Save current buffer (Ctrl/Cmd+S). */
+  onSave?: () => void;
   className?: string;
   fontSize?: number;
   /** Number of spaces per indent level (Tab key and display). */
@@ -40,6 +42,7 @@ const CodeEditor = ({
   content = "",
   filePath = "",
   onChange,
+  onSave,
   className = "",
   fontSize = 14,
   tabSize = 2,
@@ -49,6 +52,14 @@ const CodeEditor = ({
 }: CodeEditorProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const onChangeRef = useRef(onChange);
+  const onSaveRef = useRef(onSave);
+  const onSelectionChangeRef = useRef(onSelectionChange);
+  onChangeRef.current = onChange;
+  onSaveRef.current = onSave;
+  onSelectionChangeRef.current = onSelectionChange;
+  /** Skip onChange when applying external content sync. */
+  const syncingRef = useRef(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -62,25 +73,35 @@ const CodeEditor = ({
       extensions: [
         lineNumbers(),
         history(),
+        keymap.of([
+          {
+            key: "Mod-s",
+            run: () => {
+              onSaveRef.current?.();
+              return true;
+            },
+          },
+        ]),
         keymap.of(defaultKeymap),
         keymap.of(historyKeymap),
         keymap.of(searchKeymap),
         search(),
         highlightSelectionMatches(),
         ...(lang ? [lang] : []),
+        commentLanguageDataForPath(filePath),
         EditorState.tabSize.of(tabSize),
         indentUnit.of(spaces),
         editorTheme,
         EditorView.theme({ "&": { fontSize: `${fontSize}px` } }),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged && onChange) {
-            onChange(update.state.doc.toString());
+          if (update.docChanged && onChangeRef.current && !syncingRef.current) {
+            onChangeRef.current(update.state.doc.toString());
           }
-          if (update.selectionSet && onSelectionChange) {
+          if (update.selectionSet && onSelectionChangeRef.current) {
             const pos = update.state.selection.main.head;
             const line = update.state.doc.lineAt(pos);
             const col = pos - line.from + 1;
-            onSelectionChange(line.number, col);
+            onSelectionChangeRef.current(line.number, col);
           }
         }),
       ],
@@ -93,10 +114,10 @@ const CodeEditor = ({
 
     viewRef.current = view;
     registerView?.(view);
-    if (onSelectionChange) {
+    if (onSelectionChangeRef.current) {
       const pos = view.state.selection.main.head;
       const line = view.state.doc.lineAt(pos);
-      onSelectionChange(line.number, pos - line.from + 1);
+      onSelectionChangeRef.current(line.number, pos - line.from + 1);
     }
     return () => {
       registerView?.(null);
@@ -104,15 +125,20 @@ const CodeEditor = ({
       viewRef.current = null;
     };
     // Remount when language (path), theme, font, or tab size change
-  }, [registerView, onSelectionChange, theme, fontSize, tabSize, filePath]);
+  }, [registerView, theme, fontSize, tabSize, filePath]);
 
-  // Sync external content changes (e.g. open different file) without remounting
+  // Sync external content changes (e.g. agent apply) without remounting or marking dirty
   useEffect(() => {
     const view = viewRef.current;
     if (!view || content === view.state.doc.toString()) return;
-    view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: content },
-    });
+    syncingRef.current = true;
+    try {
+      view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: content },
+      });
+    } finally {
+      syncingRef.current = false;
+    }
   }, [content]);
 
   return (

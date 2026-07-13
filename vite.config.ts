@@ -16,12 +16,25 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
-    host: host || false,
+    // Bind IPv4 so both localhost and 127.0.0.1 work (Windows often makes localhost → ::1 only)
+    host: host || "127.0.0.1",
     hmr: host
       ? { protocol: "ws", host, port: 1421 }
-      : undefined,
+      : { host: "127.0.0.1" },
     watch: {
       ignored: ["**/src-tauri/**"],
+    },
+    // Browser talks same-origin; Vite forwards API + PTY (Chrome blocks cross-port WS)
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:31337",
+        changeOrigin: true,
+      },
+      "/pty": {
+        target: "ws://127.0.0.1:31337",
+        ws: true,
+        changeOrigin: true,
+      },
     },
   },
   resolve: {

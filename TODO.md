@@ -19,11 +19,8 @@
 
 ## Edit menu (leftover)
 
-- [x] **Replace in Files** (Ctrl+Shift+H) — Search panel replace-all / replace-in-files ✅
 - [ ] **Emmet: Expand Abbreviation** (Tab) — requires Emmet/extension
-*(In-editor Find (Ctrl+F) and Replace (Ctrl+H) implemented via @codemirror/search.)*
-
-*(Edit menu: Undo, Redo, Cut, Copy, Paste, Find, Replace, Find in Files, Replace in Files, Toggle Line/Comment, Toggle Block Comment.)*
+*(Edit menu submenus wired: Find ›, Selection ›, Copy Path › — Undo/Redo/Cut/Copy/Paste/Comments.)*
 
 ---
 

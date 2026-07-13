@@ -114,21 +114,31 @@ export function buildAgentContextBlock(input: AgentContextInput): string {
         break;
       }
       case "codebase": {
-        if (!input.codebaseIndex) {
+        if (!input.codebaseIndex || input.codebaseIndex.chunks.length === 0) {
           sections.push(
-            "### @codebase\n_Index not ready — open a folder and wait for indexing, or expand more directories in the file tree._"
+            "### @codebase\n_Index not ready — open a folder and wait a moment for indexing._"
           );
           break;
         }
-        const query = input.message.replace(MENTION_RE, "").trim() || input.message;
-        const chunks = searchCodebase(input.codebaseIndex, query, 10);
+        // Prefer the user's intent text; fall back to active path for bare @codebase
+        const stripped = input.message.replace(MENTION_RE, "").trim();
+        const query =
+          stripped ||
+          [input.activeFilePath, input.selection?.text?.slice(0, 200)].filter(Boolean).join(" ") ||
+          input.message;
+        const chunks = searchCodebase(input.codebaseIndex, query, 12);
         if (chunks.length === 0) {
-          sections.push("### @codebase\n_No matching snippets found for your query._");
+          sections.push(
+            `### @codebase\n_No matching snippets for:_ ${query.slice(0, 120) || "(empty query)"}`
+          );
         } else {
+          sections.push(
+            `### @codebase matches (${chunks.length} snippets from ${input.codebaseIndex.fileCount} files)`
+          );
           for (const chunk of chunks) {
             const label = chunk.startLine > 1 ? `${chunk.path}:${chunk.startLine}` : chunk.path;
             sections.push(
-              `### Codebase \`${label}\`\n\`\`\`\n${truncate(chunk.content, chunk.path)}\n\`\`\``
+              `#### \`${label}\`\n\`\`\`\n${truncate(chunk.content, chunk.path)}\n\`\`\``
             );
           }
         }

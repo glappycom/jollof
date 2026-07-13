@@ -36,6 +36,8 @@ export interface AgentMessage {
   pendingEdits?: AgentFileEdit[];
   /** Assistant messages: proposed shell commands awaiting approve/run */
   pendingCommands?: AgentCommand[];
+  /** Synthetic / tool-continue nudges — sent to the model but not shown in chat */
+  hidden?: boolean;
 }
 
 export interface ActiveAgent {
@@ -64,7 +66,7 @@ interface AgentChatViewProps {
   agent: ActiveAgent;
   onClose: () => void;
   onNewChat?: () => void;
-  onSendMessage: (content: string, images?: string[]) => void;
+  onSendMessage: (content: string, images?: string[], mode?: AgentMode) => void;
   /** Show "Thinking..." while waiting for first token */
   isStreaming?: boolean;
   /** Optional stats when closing (e.g. for display) */
@@ -166,7 +168,11 @@ export default function AgentChatView({
   const handleSend = () => {
     const q = input.trim();
     if (!q && pendingImages.length === 0) return;
-    onSendMessage(q || "(image)", pendingImages.length ? pendingImages : undefined);
+    onSendMessage(
+      q || "(image)",
+      pendingImages.length ? pendingImages : undefined,
+      isComposer ? "agent" : agentMode
+    );
     setInput("");
     setPendingImages([]);
   };
@@ -225,7 +231,7 @@ export default function AgentChatView({
           {/* Scrollable area: responses flow behind the sticky query */}
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
             <div className="flex flex-col gap-4">
-          {agent.messages.map((m) => (
+          {agent.messages.filter((m) => !m.hidden).map((m) => (
             <div
               key={m.id}
               className={cn(

@@ -73,6 +73,22 @@ export function formatRunResultForChat(cmd: AgentCommand): string {
   return parts.join("\n");
 }
 
+/** Hidden user nudge that triggers the next model turn after a run. */
+export function buildContinueAfterRunPrompt(cmd: AgentCommand): string {
+  const ok = cmd.status === "accepted" && (cmd.exitCode === 0 || cmd.exitCode === undefined);
+  if (ok) {
+    return (
+      "The command above succeeded. Briefly confirm what it means for the task, " +
+      "then continue with any remaining work using jollof-edit / jollof-run as needed. " +
+      "If the user's request is fully done, say so clearly."
+    );
+  }
+  return (
+    "The command above failed or timed out. Diagnose from stdout/stderr, " +
+    "then fix with jollof-edit and/or propose another jollof-run. Do not repeat the same failing command unchanged."
+  );
+}
+
 export const AGENT_RUN_SYSTEM_APPEND = `
 
 ## Terminal commands (when the user should run something)
@@ -87,5 +103,5 @@ Rules:
 - One command (or short script) per block. Prefer non-interactive commands.
 - Do **not** run destructive commands (\`rm -rf\`, \`git push --force\`, \`format\`) unless the user explicitly asked.
 - Explain briefly in markdown **before** the block why the command is needed.
-- After the user accepts and you receive the result, use it to continue (fix failures, summarize output).
+- After the user accepts, you will automatically receive the result and should continue (fix failures or summarize success).
 - Prefer workspace-relative commands; assume the shell starts in the project root.`;

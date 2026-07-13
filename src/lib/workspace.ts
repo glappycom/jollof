@@ -127,15 +127,48 @@ export async function readFileContent(handle: FileSystemFileHandle): Promise<str
 }
 
 /**
+ * Ensure readwrite permission on a file handle (required after refresh / stale permission).
+ */
+async function ensureReadWritePermission(handle: FileSystemFileHandle): Promise<void> {
+  const withPerm = handle as FileSystemFileHandle & {
+    queryPermission?(desc: { mode: "readwrite" }): Promise<PermissionState>;
+    requestPermission?(desc: { mode: "readwrite" }): Promise<PermissionState>;
+  };
+  if (typeof withPerm.queryPermission === "function") {
+    let state = await withPerm.queryPermission({ mode: "readwrite" });
+    if (state !== "granted" && typeof withPerm.requestPermission === "function") {
+      state = await withPerm.requestPermission({ mode: "readwrite" });
+    }
+    if (state !== "granted") {
+      throw new Error("Write permission denied for this file.");
+    }
+  }
+}
+
+/**
  * Write text content to a file via its handle (requires readwrite permission).
  */
 export async function writeFileContent(
   handle: FileSystemFileHandle,
   content: string
 ): Promise<void> {
+  await ensureReadWritePermission(handle);
   const writable = await handle.createWritable();
   await writable.write(content);
   await writable.close();
+}
+
+/**
+ * Relative path under the workspace root for an open file path like "myapp/src/a.ts".
+ */
+export function relPathFromWorkspacePath(
+  filePath: string | undefined,
+  rootName: string | undefined
+): string | null {
+  if (!filePath || !rootName) return null;
+  const prefix = `${rootName}/`;
+  if (filePath.startsWith(prefix)) return filePath.slice(prefix.length);
+  return null;
 }
 
 /**
@@ -279,6 +312,95 @@ export function getFlatFileList(
   }
   walk(nodes);
   return out.sort((a, b) => a.path.localeCompare(b.path, undefined, { sensitivity: "base" }));
+}
+
+const INDEX_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "__pycache__", ".venv", ".next", "coverage"]);
+
+/**
+ * Recursively collect files from a File System Access directory handle (for @codebase).
+ */
+export async function collectFilesFromHandle(
+  rootHandle: FileSystemDirectoryHandle,
+  rootName: string,
+  maxFiles = 250
+): Promise<FlatFileEntry[]> {
+  const out: FlatFileEntry[] = [];
+
+  async function walk(
+    dir: FileSystemDirectoryHandle,
+    treePrefix: string,
+    relPrefix: string
+  ): Promise<void> {
+    if (out.length >= maxFiles) return;
+    const dirAny = dir as unknown as {
+      values(): AsyncIterableIterator<FileSystemFileHandle | FileSystemDirectoryHandle>;
+    };
+    for await (const entry of dirAny.values()) {
+      if (out.length >= maxFiles) break;
+      const path = `${treePrefix}/${entry.name}`;
+      const relPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+      if (entry.kind === "file") {
+        out.push({
+          path,
+          name: entry.name,
+          handle: entry as FileSystemFileHandle,
+          relPath,
+        });
+      } else if (entry.kind === "directory") {
+        if (INDEX_SKIP_DIRS.has(entry.name)) continue;
+        await walk(entry as FileSystemDirectoryHandle, path, relPath);
+      }
+    }
+  }
+
+  await walk(rootHandle, rootName, "");
+  return out.sort((a, b) => a.path.localeCompare(b.path, undefined, { sensitivity: "base" }));
+}
+
+/**
+ * Best-effort full file list for indexing: server tree → recursive handle → expanded cache.
+ */
+export async function collectFilesForIndex(opts: {
+  rootName: string;
+  rootHandle?: FileSystemDirectoryHandle | null;
+  rootLocalPath?: string | null;
+  localServerUrl?: string;
+  topLevelNodes: FileTreeNode[];
+  childCache: Record<string, FileTreeNode[]>;
+  maxFiles?: number;
+}): Promise<FlatFileEntry[]> {
+  const maxFiles = opts.maxFiles ?? 250;
+
+  if (opts.rootLocalPath) {
+    try {
+      const { fsListTree } = await import("@/lib/fs-api");
+      const entries = await fsListTree(
+        opts.localServerUrl || "http://localhost:31337",
+        opts.rootLocalPath,
+        opts.rootName,
+        maxFiles
+      );
+      return entries
+        .filter((e) => e.kind === "file")
+        .map((e) => ({
+          path: e.path,
+          name: e.name,
+          relPath: e.relPath,
+        }));
+    } catch {
+      // fall through
+    }
+  }
+
+  if (opts.rootHandle) {
+    try {
+      return await collectFilesFromHandle(opts.rootHandle, opts.rootName, maxFiles);
+    } catch {
+      // fall through
+    }
+  }
+
+  return getFlatFileList(opts.topLevelNodes, opts.childCache).slice(0, maxFiles);
 }
 
 export interface SearchMatch {

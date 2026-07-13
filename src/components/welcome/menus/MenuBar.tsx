@@ -156,6 +156,13 @@ const MenuBar = () => {
               id={`menu-${menu.key.toLowerCase()}`}
               role="menu"
               className="absolute left-0 top-full z-50 mt-1 w-56 rounded border border-cursor-border/80 bg-cursor-dropdown p-1 text-[11px] text-cursor-text shadow-dropdown"
+              onClick={(e) => {
+                const target = e.target as HTMLElement;
+                // Close after activating a real action (not submenu open toggles)
+                if (target.closest("[data-submenu-trigger]")) return;
+                const item = target.closest('button[type="button"]');
+                if (item) setOpenMenu(null);
+              }}
             >
               {menu.component}
             </div>

@@ -31,6 +31,23 @@ export async function fsListDirectory(
   return data.entries;
 }
 
+/** Recursive file list for codebase indexing. */
+export async function fsListTree(
+  localServerUrl: string,
+  cwd: string,
+  rootName: string,
+  maxFiles = 250
+): Promise<FsListEntry[]> {
+  const base = localServerUrl || DEFAULT_SERVER;
+  const params = new URLSearchParams({
+    cwd,
+    rootName,
+    max: String(maxFiles),
+  });
+  const data = await fsFetch<{ entries: FsListEntry[] }>(`${base}/api/fs/tree?${params}`);
+  return data.entries;
+}
+
 export async function fsReadFile(
   localServerUrl: string,
   cwd: string,

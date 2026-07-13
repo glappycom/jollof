@@ -27,7 +27,7 @@ export function parseEditsFromResponse(content: string): Omit<AgentFileEdit, "st
   while ((m = fenceRe.exec(content)) !== null) {
     const path = (m[1] ?? "").trim();
     const newContent = m[2].replace(/\n$/, "");
-    if (!path || seenPaths.has(path)) continue;
+    if (!path || seenPaths.has(path) || isPlaceholderEditContent(newContent)) continue;
     seenPaths.add(path);
     edits.push({ id: crypto.randomUUID(), path, originalContent: "", newContent });
   }
@@ -36,12 +36,29 @@ export function parseEditsFromResponse(content: string): Omit<AgentFileEdit, "st
   while ((m = xmlRe.exec(content)) !== null) {
     const path = m[1].trim();
     const newContent = m[2].replace(/\n$/, "");
-    if (!path || seenPaths.has(path)) continue;
+    if (!path || seenPaths.has(path) || isPlaceholderEditContent(newContent)) continue;
     seenPaths.add(path);
     edits.push({ id: crypto.randomUUID(), path, originalContent: "", newContent });
   }
 
   return edits;
+}
+
+/** Drop invented / stub edit bodies so Accept/Reject never shows junk. */
+function isPlaceholderEditContent(content: string): boolean {
+  const t = content.trim();
+  if (!t) return true;
+  if (t.length < 30) return true;
+  if (/full file content from earlier/i.test(t)) return true;
+  if (/entire file contents here/i.test(t)) return true;
+  if (/TODO:\s*fill/i.test(t)) return true;
+  if (/^\/\/\s*(full|complete|entire|placeholder|stub)\b/i.test(t)) return true;
+  const codeLines = t.split("\n").filter((l) => {
+    const s = l.trim();
+    return s && !s.startsWith("//") && !s.startsWith("/*") && !s.startsWith("*");
+  });
+  if (codeLines.length === 0 && t.length < 200) return true;
+  return false;
 }
 
 /** Remove edit blocks from assistant markdown (show prose + diff UI separately). */
@@ -116,7 +133,7 @@ entire file contents here
 \`\`\`
 
 Rules:
-- Use paths relative to the workspace root (e.g. \`src/App.tsx\`).
-- Include the COMPLETE new file content in each block.
-- You may still explain changes in markdown above the blocks.
-- Add a "### Summary of changes:" section listing what you changed.`;
+- Use paths relative to the workspace root (e.g. \`src/App.tsx\`). Never prefix with the workspace folder name.
+- Include the COMPLETE new file content in each block — real code only, never placeholders like "full file content from earlier" or "// TODO: fill in".
+- Only emit \`jollof-edit\` when the user asked you to change code. Pure questions get explanation only.
+- When you do change files, add a "### Summary of changes:" section listing what you changed.`;

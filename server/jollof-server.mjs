@@ -101,6 +101,30 @@ function listDirectoryEntries(cwd, rel, rootName) {
   return nodes;
 }
 
+/** Recursive file list for @codebase indexing (skips heavy dirs). */
+function listAllFiles(cwd, rootName, maxFiles = 250) {
+  const out = [];
+  function walk(rel) {
+    if (out.length >= maxFiles) return;
+    let entries;
+    try {
+      entries = listDirectoryEntries(cwd, rel, rootName);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (out.length >= maxFiles) break;
+      if (entry.kind === "file") {
+        out.push(entry);
+      } else if (entry.kind === "directory") {
+        walk(entry.relPath);
+      }
+    }
+  }
+  walk("");
+  return out;
+}
+
 const MAX_RUN_OUTPUT = 200_000;
 
 function runShellCommand(command, workDir, timeoutMs) {
@@ -280,6 +304,15 @@ async function handleGitApi(req, res, url) {
       return;
     }
 
+    if (url.pathname === "/api/fs/tree" && req.method === "GET") {
+      const cwd = url.searchParams.get("cwd") || DEFAULT_CWD;
+      const rootName = url.searchParams.get("rootName") || path.basename(resolveCwd(cwd));
+      const maxFiles = Math.min(Number(url.searchParams.get("max") || 250) || 250, 500);
+      const entries = listAllFiles(cwd, rootName, maxFiles);
+      sendJson(res, 200, { entries, fileCount: entries.length });
+      return;
+    }
+
     if (url.pathname === "/api/fs/read" && req.method === "GET") {
       const cwd = url.searchParams.get("cwd") || DEFAULT_CWD;
       const rel = url.searchParams.get("rel") || "";
@@ -436,11 +469,11 @@ wss.on("connection", (ws) => {
 });
 
 // Legacy bare WebSocket on same port (no path) for older clients
-server.listen(PORT, () => {
-  console.log(`Jollof local server http://localhost:${PORT}`);
-  console.log(`  PTY:  ws://localhost:${PORT}/pty`);
-  console.log(`  Git:  http://localhost:${PORT}/api/git/status?cwd=...`);
-  console.log(`  FS:   http://localhost:${PORT}/api/fs/list?cwd=...`);
-  console.log(`  Run:  POST http://localhost:${PORT}/api/run`);
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`Jollof local server http://0.0.0.0:${PORT}`);
+  console.log(`  PTY:  ws://127.0.0.1:${PORT}/pty`);
+  console.log(`  Git:  http://127.0.0.1:${PORT}/api/git/status?cwd=...`);
+  console.log(`  FS:   http://127.0.0.1:${PORT}/api/fs/list?cwd=...`);
+  console.log(`  Run:  POST http://127.0.0.1:${PORT}/api/run`);
   console.log(`  CWD:  ${DEFAULT_CWD}`);
 });

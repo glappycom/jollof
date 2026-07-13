@@ -15,7 +15,7 @@ Last updated: 2026-07-12
 | Resizable sidebars + bottom panel | ✅ | Grid layout, maximize chat/panel |
 | Editor tabs | ✅ | Dirty indicator, close |
 | Command palette | ✅ | Ctrl+Shift+P |
-| Menu bar (File, Edit, View, …) | 🟡 | Many items stubbed — see `TODO.md` |
+| Menu bar (File, Edit, View, …) | 🟡 | File + Edit menus/submenus wired; View/Go/others partial |
 | Status bar | ✅ | Line/col, basic info |
 | Dark / light theme | 🟡 | Theme sync exists; polish ongoing |
 | Orange / Jollof accent | ✅ | Replaces default blue accent |
@@ -33,7 +33,7 @@ Last updated: 2026-07-12
 | Multi-language support | ✅ | Sprint 2 — lang map in `src/lib/language.ts` |
 | LSP / IntelliSense | 🟡 | Sprint 2 — TS syntactic diagnostics + symbols; full LSP deferred |
 | Tab completion (Copilot++) | ⬜ | — |
-| Inline edit (Cmd+K) | ✅ | Ctrl+K modal; `jollof-inline` accept/reject |
+| Inline edit (Cmd+K) | ✅ | Chord `Ctrl+K I`; `jollof-inline` accept/reject |
 | Split editor | ⬜ | — |
 
 ---
@@ -44,7 +44,7 @@ Last updated: 2026-07-12
 |------------|--------|-------|
 | Open folder | ✅ | File System Access API |
 | File tree + lazy dirs | ✅ | Skips node_modules, .git |
-| Save / Save As | ✅ | Needs file handle |
+| Save / Save As | ✅ | Ctrl+S / File → Save / tab Save button; path + File System Access write-back |
 | Open Recent | 🟡 | Recent list exists; polish |
 | Multi-root workspace | ⬜ | — |
 | Search in files | ✅ | Ctrl+Shift+F |
@@ -57,7 +57,7 @@ Last updated: 2026-07-12
 | Capability | Status | Notes |
 |------------|--------|-------|
 | Terminal panel + tabs | ✅ | xterm.js |
-| Real shell (PTY) | ✅ | Auto-starts with `npm run dev`; ws://localhost:31337/pty |
+| Real shell (PTY) | ✅ | Auto-starts with `npm run dev`; same-origin `/pty` proxy → :31337 |
 | Agent runs commands | ✅ | Phase D2 — `jollof-run` blocks; Approve → `POST /api/run`; output back in chat |
 | Ctrl+K generate command | 🟡 | Agent proposes `jollof-run`; Run button in chat (not terminal Ctrl+K yet) |
 
@@ -69,7 +69,7 @@ Last updated: 2026-07-12
 |------------|--------|-------|
 | Source control panel | ✅ | Stage, unstage, diff, commit via local server |
 | Diff / stage / commit | ✅ | Requires workspace local path in Source Control |
-| Run active file | ⬜ | — |
+| Run active file | ✅ | Ctrl+F5 / Run menu — JS/TS via node/tsx, Python via py/python3; Output panel |
 | Debug / breakpoints | ⬜ | — |
 | Tasks (tasks.json) | ⬜ | Run Task is placeholder |
 
@@ -79,10 +79,10 @@ Last updated: 2026-07-12
 
 | Capability | Status | Notes |
 |------------|--------|-------|
-| Problems panel | ✅ | TS/JS syntactic via TypeScript LS; JSON.parse for `.json` |
+| Problems panel | ✅ | Buffer semantic + project `tsc --noEmit` when local cwd available |
 | Next / previous problem (F8) | ✅ | Wired to Problems list |
 | Output panel | ✅ | Context + append |
-| ESLint / TS diagnostics | 🟡 | Syntactic TS; semantic/project + ESLint deferred |
+| ESLint / TS diagnostics | 🟡 | Project tsc + in-editor semantic; ESLint deferred |
 
 ---
 
@@ -96,15 +96,16 @@ Last updated: 2026-07-12
 | Image / vision upload | ✅ | Multimodal user messages |
 | Chat history restore | ✅ | Per-session messages |
 | Title from first message | ✅ | — |
-| Agent / Plan / Debug / Ask modes | 🟡 | UI only; not wired to behavior |
+| Agent / Plan / Debug / Ask modes | ✅ | Sprint 3 — mode changes system prompt; Ask/Plan block edit/run actions |
 | Auto model dropdown | 🟡 | UI placeholder |
 | **@ context** (@ file, selection, open, active) | ✅ | Phase A — `@file`, `@selection`, `@open`, `@active` |
 | **Apply edits + diff + Accept/Reject** | ✅ | Phase A — `jollof-edit` blocks, diff UI, writes to workspace |
-| @ codebase / semantic index | ✅ | Keyword index; `@codebase` in chat/composer |
+| @ codebase / semantic index | ✅ | Sprint 3 — full-tree crawl + IDF/BM25-ish retrieval; diversify by file |
 | Composer (multi-file) | ✅ | Ctrl+Shift+I; multi-file `jollof-edit` blocks |
 | Rules file (.cursorrules) | 🟡 | Loads `.cursorrules`, `AGENTS.md`, `jollof.rules` |
 | MCP tools | ⬜ | — |
 | Voice input | ⬜ | Future release — `TODO.md` |
+| Auto-continue after Run | ✅ | Sprint 3 — approve `jollof-run` → result → hidden continue turn (Preferences toggle) |
 
 ---
 

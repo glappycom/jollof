@@ -8,8 +8,8 @@ const TerminalMenu = () => {
       <MenuItem label="New Terminal" shortcut="Ctrl+Shift+`" onClick={actions?.newTerminal} />
       <MenuItem label="Split Terminal" shortcut="Ctrl+Shift+5" onClick={actions?.newTerminal} />
       <MenuSeparator />
+      <MenuItem label="Run Active File" shortcut="Ctrl+F5" onClick={actions?.runActiveFile} />
       <MenuItem label="Run Task..." shortcut="Ctrl+Shift+B" onClick={actions?.runTask} />
-      {/* Leftover: Run Build Task..., Run Active File, Configure Tasks..., Configure Default Build Task... */}
     </div>
   );
 };

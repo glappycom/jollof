@@ -32,6 +32,8 @@ export interface EditorActions {
   showProblems: () => void;
   /** Run menu */
   runTask: () => void;
+  /** Run the active editor file (JS/TS/Python) via local server. */
+  runActiveFile: () => void;
   /** Go menu */
   openGoToFile: () => void;
   openGoToLineDialog: () => void;
@@ -44,10 +46,20 @@ export interface EditorActions {
   cut: () => void | Promise<void>;
   copy: () => void | Promise<void>;
   paste: () => void | Promise<void>;
+  copyPath?: () => void | Promise<void>;
+  copyRelativePath?: () => void | Promise<void>;
   toggleLineComment: () => void;
   toggleBlockComment: () => void;
   findInEditor: () => void;
   replaceInEditor: () => void;
+  findNext?: () => void;
+  findPrevious?: () => void;
+  selectAll?: () => void;
+  copyLineUp?: () => void;
+  copyLineDown?: () => void;
+  moveLineUp?: () => void;
+  moveLineDown?: () => void;
+  deleteLine?: () => void;
   /** Help menu */
   showWelcome: () => void;
   openAbout: () => void;

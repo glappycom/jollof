@@ -88,6 +88,18 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
             />
             <label htmlFor="auto-save" className="text-cursor-text-muted">Auto Save</label>
           </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="auto-continue-run"
+              checked={settings.autoContinueAfterRun}
+              onChange={(e) => updateSettings({ autoContinueAfterRun: e.target.checked })}
+              className="rounded border-cursor-border"
+            />
+            <label htmlFor="auto-continue-run" className="text-cursor-text-muted">
+              Auto-continue after Run
+            </label>
+          </div>
           <div>
             <label id="settings-terminal-ws-label" htmlFor="settings-terminal-ws" className="mb-1 block text-cursor-text-muted">Terminal: WebSocket URL</label>
             <input
@@ -95,12 +107,13 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
               type="text"
               value={settings.terminalWsUrl}
               onChange={(e) => updateSettings({ terminalWsUrl: e.target.value.trim() })}
-              placeholder="ws://localhost:31337/pty"
+              placeholder="ws://127.0.0.1:31337/pty (or leave default — uses Vite /pty proxy)"
               className="w-full rounded border border-cursor-border bg-cursor-editor px-2 py-1 text-cursor-text placeholder:text-cursor-text-muted"
               aria-labelledby="settings-terminal-ws-label"
             />
             <p className="mt-1 text-[10px] text-cursor-text-muted">
-              Started automatically with <code className="rounded bg-cursor-hover px-1">npm run dev</code>. Default: ws://localhost:31337/pty
+              Started automatically with <code className="rounded bg-cursor-hover px-1">npm run dev</code>.
+              Dev default is same-origin <code className="rounded bg-cursor-hover px-1">ws://…/pty</code> via Vite proxy.
             </p>
           </div>
           <div>

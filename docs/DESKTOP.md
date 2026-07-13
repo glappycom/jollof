@@ -93,5 +93,5 @@ Stop other Vite instances or change the port in `vite.config.ts` and `src-tauri/
 
 - **D1 (this)** — Tauri shell, native open folder, FS via local server
 - **D2** — Agent-run terminal commands
-- **D3** — Semantic `@codebase` (embeddings)
+- **D3** — Smarter `@codebase` (full-tree + IDF retrieval shipped; embeddings optional later)
 - **D4** — Africa defaults (DeepSeek, offline models)

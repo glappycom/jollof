@@ -3,6 +3,7 @@
  */
 
 import type { Extension } from "@codemirror/state";
+import { EditorState } from "@codemirror/state";
 import { javascript } from "@codemirror/lang-javascript";
 import { json } from "@codemirror/lang-json";
 import { html } from "@codemirror/lang-html";
@@ -14,6 +15,42 @@ export function extensionOf(path: string): string {
   const base = path.replace(/\\/g, "/").split("/").pop() ?? path;
   const i = base.lastIndexOf(".");
   return i >= 0 ? base.slice(i).toLowerCase() : "";
+}
+
+export type CommentStyle = { line?: string; block?: { open: string; close: string } };
+
+/** Comment markers by extension — used when language packages omit languageData. */
+export function commentStyleForPath(path: string): CommentStyle {
+  const ext = extensionOf(path);
+  switch (ext) {
+    case ".py":
+      return { line: "#" };
+    case ".html":
+    case ".htm":
+    case ".xml":
+    case ".svg":
+      return { block: { open: "<!--", close: "-->" } };
+    case ".css":
+    case ".scss":
+    case ".less":
+      return { block: { open: "/*", close: "*/" } };
+    case ".md":
+    case ".mdx":
+    case ".markdown":
+      return { line: "//", block: { open: "<!--", close: "-->" } };
+    case ".json":
+    case ".jsonc":
+      return { line: "//", block: { open: "/*", close: "*/" } };
+    default:
+      // JS/TS and plain text fallback
+      return { line: "//", block: { open: "/*", close: "*/" } };
+  }
+}
+
+/** Ensure comment commands always have tokens for the active file type. */
+export function commentLanguageDataForPath(path: string): Extension {
+  const style = commentStyleForPath(path);
+  return EditorState.languageData.of(() => [{ commentTokens: style }]);
 }
 
 /** CodeMirror language extension for a file path (empty if plain text). */

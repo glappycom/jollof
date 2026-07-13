@@ -1,7 +1,22 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import type { EditorView } from "@codemirror/view";
-import { openSearchPanel } from "@codemirror/search";
-import { undo as cmUndo, redo as cmRedo, toggleLineComment as cmToggleLineComment, toggleBlockComment as cmToggleBlockComment } from "@codemirror/commands";
+import {
+  openSearchPanel,
+  findNext as cmFindNext,
+  findPrevious as cmFindPrevious,
+} from "@codemirror/search";
+import {
+  undo as cmUndo,
+  redo as cmRedo,
+  toggleLineComment as cmToggleLineComment,
+  toggleBlockComment as cmToggleBlockComment,
+  selectAll as cmSelectAll,
+  copyLineUp as cmCopyLineUp,
+  copyLineDown as cmCopyLineDown,
+  moveLineUp as cmMoveLineUp,
+  moveLineDown as cmMoveLineDown,
+  deleteLine as cmDeleteLine,
+} from "@codemirror/commands";
 import { Group, Panel, Separator, useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { Folder, PanelLeftClose, PanelRightClose, PanelLeftOpen, GitBranch } from "lucide-react";
 import { layoutStorage } from "@/lib/layout-storage";
@@ -21,20 +36,26 @@ import {
   writeFileContent,
   writeWorkspaceFileAtPath,
   readWorkspaceFile,
+  readWorkspaceFileAtPath,
   getFlatFileList,
+  collectFilesForIndex,
   isFileSystemAccessSupported,
+  relPathFromWorkspacePath,
   type FileTreeNode,
   type FlatFileEntry,
   type SearchMatch,
 } from "@/lib/workspace";
-import { getRecentFolders, addRecentFolder, type RecentFolderEntry } from "@/lib/recent-folders";
-import { getDiagnostics, type ProblemEntry } from "@/lib/diagnostics";
+import { getRecentFolders, addRecentFolder, addRecentPathFolder, type RecentFolderEntry } from "@/lib/recent-folders";
+import { getDiagnostics, getProjectDiagnostics, mergeDiagnostics, type ProblemEntry } from "@/lib/diagnostics";
+import { buildRunActiveFileCommand, runFileKindForPath, runFileLabel } from "@/lib/run-file";
 import { getSymbols } from "@/lib/symbols";
 import { languageLabelForPath } from "@/lib/language";
 import { streamAgentResponse } from "@/lib/agent-api";
 import { parseInlineEditFromResponse } from "@/lib/agent-edits";
 import { normalizeAgentPath } from "@/lib/agent-workspace";
 import { buildChatSystemPrompt, buildComposerSystemPrompt, buildInlineEditSystemPrompt } from "@/lib/agent-prompts";
+import { parseContextMentions } from "@/lib/agent-context";
+import { DEFAULT_CHORD_TIMEOUT_MS, isModifierOnlyKey, matchChordSecond } from "@/lib/key-chords";
 import { runAgentTurn, type AgentWorkspaceContext } from "@/lib/agent-session";
 import { buildCodebaseIndex, type CodebaseIndex } from "@/lib/codebase-index";
 import { loadProjectRules } from "@/lib/cursor-rules";
@@ -44,7 +65,7 @@ import { terminalWsUrl } from "@/lib/local-server";
 import { isTauri } from "@/lib/platform";
 import { openDesktopFolder, loadDesktopDirectoryChildren, openFolderByAbsolutePath } from "@/lib/desktop-workspace";
 import { runWorkspaceCommand } from "@/lib/run-api";
-import { formatRunResultForChat } from "@/lib/agent-runs";
+import { formatRunResultForChat, buildContinueAfterRunPrompt } from "@/lib/agent-runs";
 import { fetchGitStatus } from "@/lib/git-api";
 import QuickOpen from "@/components/quick-open/QuickOpen";
 import SearchPanel from "@/components/search/SearchPanel";
@@ -59,7 +80,7 @@ import GoToSymbolModal from "@/components/editor/GoToSymbolModal";
 import AboutModal from "@/components/welcome/AboutModal";
 import StatusBar from "@/components/status-bar/StatusBar";
 import AgentsPanel from "@/components/agents/AgentsPanel";
-import AgentChatView, { type AgentMessage } from "@/components/agents/AgentChatView";
+import AgentChatView, { type AgentMessage, type ActiveAgent, type AgentMode } from "@/components/agents/AgentChatView";
 import type { AgentSessionHistory } from "@/components/agents/AgentsPanel";
 import ResizeHandle, { getStoredSidebarWidths, setStoredSidebarWidths } from "@/components/layout/ResizeHandle";
 import { openDocumentation, openReleaseNotes, openReportIssue } from "@/lib/app-links";
@@ -103,6 +124,8 @@ const Index = () => {
   const [searchReplaceMode, setSearchReplaceMode] = useState(false);
   const [recentFolders, setRecentFolders] = useState<RecentFolderEntry[]>([]);
   const [problems, setProblems] = useState<ProblemEntry[]>([]);
+  const [projectProblems, setProjectProblems] = useState<ProblemEntry[]>([]);
+  const [bufferProblems, setBufferProblems] = useState<ProblemEntry[]>([]);
   const [pendingProblemGoTo, setPendingProblemGoTo] = useState<{ path: string; line: number } | null>(null);
   const [activePanelTab, setActivePanelTab] = useState<PanelTabId>("terminal");
   const [sidebarVisible, setSidebarVisible] = useState(true);
@@ -146,6 +169,8 @@ const Index = () => {
   } | null>(null);
   const [composerStreaming, setComposerStreaming] = useState(false);
   const [codebaseIndex, setCodebaseIndex] = useState<CodebaseIndex | null>(null);
+  const [chordHint, setChordHint] = useState<string | null>(null);
+  const chordTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [projectRules, setProjectRules] = useState("");
   const [inlineEditOpen, setInlineEditOpen] = useState(false);
   const [inlineEditContext, setInlineEditContext] = useState<InlineEditContext | null>(null);
@@ -247,7 +272,7 @@ const Index = () => {
   }, [activeAgent]);
 
   const chatSystemPrompt = useMemo(
-    () => buildChatSystemPrompt(projectRules),
+    () => buildChatSystemPrompt(projectRules, "agent"),
     [projectRules]
   );
   const composerSystemPrompt = useMemo(
@@ -286,9 +311,51 @@ const Index = () => {
     getEditorSelection,
   }), [workspace, childCache, openFiles, activeFileId, codebaseIndex, settings.localServerUrl, getEditorSelection]);
 
+  const handleOpenFolderRef = useRef<() => void>(() => {});
+
   const sendAgentMessage = useCallback(
-    (content: string, images?: string[]) => {
+    (content: string, images?: string[], mode: AgentMode = "agent") => {
       if (!activeAgent) return;
+
+      const wantsCodebase = parseContextMentions(content).some((m) => m.kind === "codebase");
+      if (wantsCodebase && (!workspace || !codebaseIndex?.chunks.length)) {
+        setSidebarVisible(true);
+        setLeftSidebarTab("explorer");
+        const tip = !workspace
+          ? "Open a folder first (Explorer → Open Folder), wait for indexing, then ask again with @codebase."
+          : "Codebase index is still building — wait a few seconds, then ask again with @codebase.";
+        toast({
+          title: !workspace ? "Open a folder for @codebase" : "Indexing…",
+          description: tip,
+        });
+        const userMsg: AgentMessage = {
+          id: crypto.randomUUID(),
+          role: "user",
+          content,
+          ...(images?.length ? { images } : {}),
+        };
+        const assistantMsg: AgentMessage = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: tip,
+        };
+        setActiveAgent((prev) =>
+          prev
+            ? {
+                ...prev,
+                name:
+                  prev.messages.length === 0 &&
+                  (prev.name === "New agent" || prev.name === "App shell review")
+                    ? deriveChatTitle(content)
+                    : prev.name,
+                messages: [...prev.messages, userMsg, assistantMsg],
+              }
+            : null
+        );
+        if (!workspace) handleOpenFolderRef.current();
+        return;
+      }
+
       const isFirstMessage = activeAgent.messages.length === 0;
       const useDefaultName =
         activeAgent.name === "New agent" || activeAgent.name === "App shell review";
@@ -302,14 +369,23 @@ const Index = () => {
         content,
         images,
         session: activeAgent,
-        systemPrompt: chatSystemPrompt,
+        systemPrompt: buildChatSystemPrompt(projectRules, mode),
         settings,
         ctx: getAgentWorkspaceContext(),
         setSession: setActiveAgent,
         setStreaming: setAgentStreaming,
+        disallowActions: mode === "ask" || mode === "plan",
       });
     },
-    [activeAgent, chatSystemPrompt, deriveChatTitle, getAgentWorkspaceContext, settings]
+    [
+      activeAgent,
+      deriveChatTitle,
+      getAgentWorkspaceContext,
+      settings,
+      workspace,
+      codebaseIndex,
+      projectRules,
+    ]
   );
 
   const startComposer = useCallback(() => {
@@ -328,6 +404,36 @@ const Index = () => {
   const sendComposerMessage = useCallback(
     (content: string, images?: string[]) => {
       if (!activeComposer) return;
+
+      const wantsCodebase = parseContextMentions(content).some((m) => m.kind === "codebase");
+      if (wantsCodebase && (!workspace || !codebaseIndex?.chunks.length)) {
+        setSidebarVisible(true);
+        setLeftSidebarTab("explorer");
+        const tip = !workspace
+          ? "Open a folder first (Explorer → Open Folder), wait for indexing, then ask again with @codebase."
+          : "Codebase index is still building — wait a few seconds, then ask again with @codebase.";
+        toast({
+          title: !workspace ? "Open a folder for @codebase" : "Indexing…",
+          description: tip,
+        });
+        const userMsg: AgentMessage = {
+          id: crypto.randomUUID(),
+          role: "user",
+          content,
+          ...(images?.length ? { images } : {}),
+        };
+        const assistantMsg: AgentMessage = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: tip,
+        };
+        setActiveComposer((prev) =>
+          prev ? { ...prev, messages: [...prev.messages, userMsg, assistantMsg] } : null
+        );
+        if (!workspace) handleOpenFolderRef.current();
+        return;
+      }
+
       void runAgentTurn({
         content,
         images,
@@ -339,7 +445,14 @@ const Index = () => {
         setStreaming: setComposerStreaming,
       });
     },
-    [activeComposer, composerSystemPrompt, getAgentWorkspaceContext, settings]
+    [
+      activeComposer,
+      composerSystemPrompt,
+      getAgentWorkspaceContext,
+      settings,
+      workspace,
+      codebaseIndex,
+    ]
   );
 
   const applyAcceptEdit = useCallback(
@@ -504,10 +617,14 @@ const Index = () => {
 
   const applyAcceptCommand = useCallback(
     async (
-      session: { messages: AgentMessage[] } | null,
-      setSession: React.Dispatch<React.SetStateAction<{ id: string; name: string; messages: AgentMessage[] } | null>>,
+      session: ActiveAgent | null,
+      setSession: React.Dispatch<React.SetStateAction<ActiveAgent | null>>,
       messageId: string,
-      commandId: string
+      commandId: string,
+      opts: {
+        systemPrompt: string;
+        setStreaming: (v: boolean) => void;
+      }
     ) => {
       if (!session) return;
       const msg = session.messages.find((m) => m.id === messageId);
@@ -542,21 +659,49 @@ const Index = () => {
           timedOut: result.timedOut,
           cwd: result.cwd,
         };
-        updateCommandInSession(setSession, messageId, commandId, updated);
 
+        const cmdForPrompt = { ...cmd, ...updated };
         const resultMsg: AgentMessage = {
           id: crypto.randomUUID(),
           role: "user",
-          content: formatRunResultForChat({ ...cmd, ...updated }),
+          content: formatRunResultForChat(cmdForPrompt),
         };
+
+        // Build history with command status + result for the continue turn
+        const historyWithResult: AgentMessage[] = session.messages.map((m) => {
+          if (m.id !== messageId || !m.pendingCommands) return m;
+          return {
+            ...m,
+            pendingCommands: m.pendingCommands.map((c) =>
+              c.id === commandId ? { ...c, ...updated } : c
+            ),
+          };
+        });
+        historyWithResult.push(resultMsg);
+
         setSession((prev) =>
-          prev ? { ...prev, messages: [...prev.messages, resultMsg] } : null
+          prev ? { ...prev, messages: historyWithResult } : null
         );
 
         toast({
           title: result.ok ? "Command finished" : "Command failed",
           description: `Exit ${result.exitCode}${result.timedOut ? " (timed out)" : ""}`,
         });
+
+        if (settings.autoContinueAfterRun && settings.agentApiKey?.trim()) {
+          await runAgentTurn({
+            content: buildContinueAfterRunPrompt(cmdForPrompt),
+            session: { ...session, messages: historyWithResult },
+            historyMessages: historyWithResult,
+            hideUserMessage: true,
+            skipContextBlock: true,
+            systemPrompt: opts.systemPrompt,
+            settings,
+            ctx: getAgentWorkspaceContext(),
+            setSession,
+            setStreaming: opts.setStreaming,
+          });
+        }
       } catch (err) {
         const error = err instanceof Error ? err.message : "Run failed";
         updateCommandInSession(setSession, messageId, commandId, {
@@ -568,17 +713,18 @@ const Index = () => {
       }
     },
     [
-      settings.localServerUrl,
+      settings,
       updateCommandInSession,
       workspace?.rootLocalPath,
       workspace?.rootName,
       workspaceLocalPathResolved,
+      getAgentWorkspaceContext,
     ]
   );
 
   const rejectCommand = useCallback(
     (
-      setSession: React.Dispatch<React.SetStateAction<{ id: string; name: string; messages: AgentMessage[] } | null>>,
+      setSession: React.Dispatch<React.SetStateAction<ActiveAgent | null>>,
       messageId: string,
       commandId: string
     ) => {
@@ -589,16 +735,22 @@ const Index = () => {
 
   const handleAcceptAgentCommand = useCallback(
     (messageId: string, commandId: string) => {
-      void applyAcceptCommand(activeAgent, setActiveAgent, messageId, commandId);
+      void applyAcceptCommand(activeAgent, setActiveAgent, messageId, commandId, {
+        systemPrompt: chatSystemPrompt,
+        setStreaming: setAgentStreaming,
+      });
     },
-    [activeAgent, applyAcceptCommand]
+    [activeAgent, applyAcceptCommand, chatSystemPrompt]
   );
 
   const handleAcceptComposerCommand = useCallback(
     (messageId: string, commandId: string) => {
-      void applyAcceptCommand(activeComposer, setActiveComposer, messageId, commandId);
+      void applyAcceptCommand(activeComposer, setActiveComposer, messageId, commandId, {
+        systemPrompt: composerSystemPrompt,
+        setStreaming: setComposerStreaming,
+      });
     },
-    [activeComposer, applyAcceptCommand]
+    [activeComposer, applyAcceptCommand, composerSystemPrompt]
   );
 
   const handleRejectAgentCommand = useCallback(
@@ -745,18 +897,58 @@ const Index = () => {
   const { append: appendOutput } = useOutput();
   const activeFile = openFiles.find((f) => f.id === activeFileId) ?? null;
 
+  // Fast buffer diagnostics (syntactic + semantic across open TS/JS files)
   useEffect(() => {
-    if (!activeFile?.path || !activeFile?.content) {
-      setProblems([]);
+    if (!activeFile?.path || activeFile.content == null) {
+      setBufferProblems([]);
       return;
     }
     const path = activeFile.path;
     const content = activeFile.content;
+    const siblings = openFiles
+      .filter((f) => f.path && f.id !== activeFile.id)
+      .map((f) => ({ path: f.path!, content: f.content }));
     const t = setTimeout(() => {
-      setProblems(getDiagnostics(path, content));
+      setBufferProblems(getDiagnostics(path, content, siblings));
     }, 400);
     return () => clearTimeout(t);
-  }, [activeFile?.path, activeFile?.content]);
+  }, [activeFile?.id, activeFile?.path, activeFile?.content, openFiles]);
+
+  // Project diagnostics via tsc when a disk workspace path is available
+  useEffect(() => {
+    const cwd = workspaceLocalPathResolved;
+    if (!cwd || !workspace?.rootName) {
+      setProjectProblems([]);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      void (async () => {
+        const next = await getProjectDiagnostics(
+          settings.localServerUrl,
+          cwd,
+          workspace.rootName
+        );
+        if (!cancelled) setProjectProblems(next);
+      })();
+    }, 1800);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [
+    workspaceLocalPathResolved,
+    workspace?.rootName,
+    settings.localServerUrl,
+    // Re-check after saves (dirty flags clear)
+    openFiles.map((f) => `${f.path}:${f.dirty ? 1 : 0}`).join("|"),
+  ]);
+
+  useEffect(() => {
+    setProblems(
+      mergeDiagnostics(projectProblems, bufferProblems, activeFile?.path)
+    );
+  }, [projectProblems, bufferProblems, activeFile?.path]);
 
   const applyOpenedFolder = useCallback(
     (result: {
@@ -775,6 +967,9 @@ const Index = () => {
       setChildCache({});
       if (result.rootLocalPath) {
         setWorkspaceLocalPathResolved(result.rootLocalPath);
+        void addRecentPathFolder(result.rootName, result.rootLocalPath).then(async () => {
+          setRecentFolders(await getRecentFolders());
+        });
       }
     },
     []
@@ -857,7 +1052,39 @@ const Index = () => {
     }
   }, [applyOpenedFolder, handleOpenFolderByPath, settings.localServerUrl]);
 
+  handleOpenFolderRef.current = () => {
+    void handleOpenFolder();
+  };
+
   const handleOpenRecentFolder = useCallback(async (entry: RecentFolderEntry) => {
+    // Path-based recent (cloud / desktop / HTTP)
+    if (entry.localPath) {
+      try {
+        setSidebarVisible(true);
+        const result = await openFolderByAbsolutePath(settings.localServerUrl, entry.localPath);
+        if (!result) {
+          toast({ title: "Could not open folder", description: "Empty or invalid path." });
+          return;
+        }
+        applyOpenedFolder(result);
+        toast({ title: "Folder opened", description: result.rootLocalPath });
+      } catch (err) {
+        toast({
+          title: "Could not open folder",
+          description: err instanceof Error ? err.message : "Path open failed.",
+        });
+      }
+      return;
+    }
+
+    if (!entry.handle) {
+      toast({
+        title: "Could not open folder",
+        description: "This recent entry has no handle or path. Use Open Folder instead.",
+      });
+      return;
+    }
+
     try {
       const handle = entry.handle as FileSystemDirectoryHandle & {
         queryPermission?(opts: { mode: string }): Promise<PermissionState>;
@@ -884,7 +1111,7 @@ const Index = () => {
         description: err instanceof Error ? err.message : "Permission or read error. Try Open Folder instead.",
       });
     }
-  }, []);
+  }, [applyOpenedFolder, settings.localServerUrl]);
 
   const handleExpandDirectory = useCallback(async (node: FileTreeNode) => {
     if (node.kind !== "directory") return;
@@ -991,40 +1218,119 @@ const Index = () => {
   }, []);
 
   const handleOpenFile = useCallback(async () => {
-    const handles = await openFilePicker(true);
-    for (const handle of handles) {
-      const existing = openFiles.find((f) => f.fileHandle === handle);
-      if (existing) {
-        setActiveFileId(existing.id);
-        continue;
-      }
-      try {
-        const content = await readFileContent(handle);
-        const id = `file-${handle.name}-${Date.now()}`;
-        const newFile: OpenFile = {
-          id,
-          name: handle.name,
-          path: handle.name,
-          content,
-          fileHandle: handle,
-          dirty: false,
-        };
-        setOpenFiles((prev) => [...prev, newFile]);
-        setActiveFileId(id);
-      } catch (err) {
+    // Cloud / insecure HTTP: open by relative path under the workspace
+    if (!isFileSystemAccessSupported() || !("showOpenFilePicker" in window)) {
+      if (!workspace?.rootLocalPath && !workspace?.rootHandle) {
         toast({
-          title: "Could not open file",
-          description: `${handle.name}: ${err instanceof Error ? err.message : "Read error."}`,
+          title: "Open a folder first",
+          description: "Open Folder, then open a file from the tree or by relative path.",
         });
+        return;
       }
+      const input = window.prompt(
+        "Open file (path relative to workspace root):",
+        "src/main.tsx"
+      );
+      if (!input?.trim()) return;
+      const rel = input.trim().replace(/\\/g, "/");
+      const name = rel.split("/").pop() || rel;
+      const path = `${workspace!.rootName}/${rel}`;
+      await openFileByEntry({
+        path,
+        name,
+        relPath: rel,
+      });
+      return;
     }
-  }, [openFiles]);
+
+    try {
+      const handles = await openFilePicker(true);
+      for (const handle of handles) {
+        const existing = openFiles.find((f) => f.fileHandle === handle);
+        if (existing) {
+          setActiveFileId(existing.id);
+          continue;
+        }
+        try {
+          const content = await readFileContent(handle);
+          const id = `file-${handle.name}-${Date.now()}`;
+          const newFile: OpenFile = {
+            id,
+            name: handle.name,
+            path: handle.name,
+            content,
+            fileHandle: handle,
+            dirty: false,
+          };
+          setOpenFiles((prev) => [...prev, newFile]);
+          setActiveFileId(id);
+        } catch (err) {
+          toast({
+            title: "Could not open file",
+            description: `${handle.name}: ${err instanceof Error ? err.message : "Read error."}`,
+          });
+        }
+      }
+    } catch (err) {
+      if ((err as { name?: string })?.name === "AbortError") return;
+      toast({
+        title: "Could not open file",
+        description: err instanceof Error ? err.message : "File picker failed.",
+      });
+    }
+  }, [openFiles, workspace, openFileByEntry]);
 
   const handleSaveAs = useCallback(async () => {
     const file = openFiles.find((f) => f.id === activeFileId);
     if (!file) return;
-    if (typeof window === "undefined" || !("showSaveFilePicker" in window)) return;
-    const w = window as Window & { showSaveFilePicker?(opts?: { suggestedName?: string }): Promise<FileSystemFileHandle> };
+
+    // Path-based / workspace root: prompt for relative path
+    if (workspace?.rootLocalPath || workspace?.rootHandle) {
+      const suggested =
+        file.relPath ||
+        relPathFromWorkspacePath(file.path, workspace.rootName) ||
+        file.name ||
+        "untitled.txt";
+      const input = window.prompt("Save as (path relative to workspace root):", suggested);
+      if (!input?.trim()) return;
+      const rel = input.trim().replace(/\\/g, "/");
+      try {
+        await writeWorkspaceFileAtPath(rel, file.content, {
+          rootHandle: workspace.rootHandle,
+          rootLocalPath: workspace.rootLocalPath,
+          localServerUrl: settings.localServerUrl,
+        });
+        const fullPath = `${workspace.rootName}/${rel}`;
+        const newFile: OpenFile = {
+          ...file,
+          id: fullPath,
+          name: rel.split("/").pop() || rel,
+          path: fullPath,
+          relPath: rel,
+          dirty: false,
+        };
+        setOpenFiles((prev) => prev.map((f) => (f.id === activeFileId ? newFile : f)));
+        setActiveFileId(fullPath);
+        toast({ title: "Saved", description: rel });
+      } catch (err) {
+        toast({
+          title: "Save As failed",
+          description: err instanceof Error ? err.message : "Could not save file.",
+        });
+      }
+      return;
+    }
+
+    if (typeof window === "undefined" || !("showSaveFilePicker" in window)) {
+      toast({
+        title: "Save As unavailable",
+        description: "Open a workspace folder first, or use Chromium on HTTPS/localhost.",
+      });
+      return;
+    }
+    const w = window as Window & {
+      showSaveFilePicker?(opts?: { suggestedName?: string }): Promise<FileSystemFileHandle>;
+    };
     try {
       const handle = await w.showSaveFilePicker!({ suggestedName: file.name || "untitled" });
       await writeFileContent(handle, file.content);
@@ -1038,20 +1344,39 @@ const Index = () => {
       };
       setOpenFiles((prev) => prev.map((f) => (f.id === activeFileId ? newFile : f)));
       setActiveFileId(newFile.id);
+      toast({ title: "Saved", description: handle.name });
     } catch (err) {
-      if ((err as { name?: string })?.name === "AbortError") return; // user cancelled
+      if ((err as { name?: string })?.name === "AbortError") return;
       toast({
         title: "Save As failed",
         description: err instanceof Error ? err.message : "Could not save file.",
       });
     }
-  }, [activeFileId, openFiles]);
+  }, [activeFileId, openFiles, workspace, settings.localServerUrl]);
 
   const handleRevertFile = useCallback(async () => {
     const file = openFiles.find((f) => f.id === activeFileId);
-    if (!file?.fileHandle) return;
+    if (!file) return;
+    const relPath =
+      file.relPath || relPathFromWorkspacePath(file.path, workspace?.rootName) || null;
     try {
-      const content = await readFileContent(file.fileHandle);
+      let content: string | null = null;
+      if (file.fileHandle) {
+        content = await readFileContent(file.fileHandle);
+      } else if (relPath && (workspace?.rootLocalPath || workspace?.rootHandle)) {
+        content = await readWorkspaceFileAtPath(relPath, {
+          rootHandle: workspace?.rootHandle ?? null,
+          rootLocalPath: workspace?.rootLocalPath ?? null,
+          localServerUrl: settings.localServerUrl,
+        });
+      }
+      if (content == null) {
+        toast({
+          title: "Could not revert file",
+          description: "No disk copy to reload from.",
+        });
+        return;
+      }
       setOpenFiles((prev) =>
         prev.map((f) => (f.id === activeFileId ? { ...f, content, dirty: false } : f))
       );
@@ -1061,7 +1386,7 @@ const Index = () => {
         description: err instanceof Error ? err.message : "Permission or read error.",
       });
     }
-  }, [activeFileId, openFiles]);
+  }, [activeFileId, openFiles, workspace, settings.localServerUrl]);
 
   const handleCloseEditor = useCallback(() => {
     if (activeFileId) handleCloseFile(activeFileId);
@@ -1083,12 +1408,81 @@ const Index = () => {
   }, [runEditorCommand]);
 
   const handleToggleLineComment = useCallback(() => {
-    runEditorCommand((view) => cmToggleLineComment({ state: view.state, dispatch: view.dispatch.bind(view) }));
-  }, [runEditorCommand]);
+    const view = editorViewRef.current;
+    if (!view) {
+      toast({ title: "No editor", description: "Open a file in the editor first." });
+      return;
+    }
+    const ok = cmToggleLineComment({
+      state: view.state,
+      dispatch: view.dispatch.bind(view),
+    });
+    if (!ok) {
+      const { from, to } = view.state.selection.main;
+      const startLine = view.state.doc.lineAt(from);
+      const endLine = view.state.doc.lineAt(to);
+      const lines: { from: number; text: string }[] = [];
+      for (let n = startLine.number; n <= endLine.number; n++) {
+        lines.push({ from: view.state.doc.line(n).from, text: view.state.doc.line(n).text });
+      }
+      const meaningful = lines.filter((l) => l.text.trim() !== "");
+      const allCommented =
+        meaningful.length > 0 && meaningful.every((l) => /^\s*\/\//.test(l.text));
+      const ops = meaningful
+        .map((l) => {
+          if (allCommented) {
+            const m = /^(\s*)\/\/ ?/.exec(l.text);
+            if (!m) return null;
+            return { from: l.from, to: l.from + m[0].length, insert: m[1] };
+          }
+          const m = /^(\s*)/.exec(l.text);
+          const indent = m?.[1] ?? "";
+          return {
+            from: l.from,
+            to: l.from + indent.length,
+            insert: `${indent}// `,
+          };
+        })
+        .filter(Boolean) as { from: number; to: number; insert: string }[];
+      if (ops.length) view.dispatch({ changes: ops });
+    }
+    view.focus();
+  }, []);
 
   const handleToggleBlockComment = useCallback(() => {
-    runEditorCommand((view) => cmToggleBlockComment({ state: view.state, dispatch: view.dispatch.bind(view) }));
-  }, [runEditorCommand]);
+    const view = editorViewRef.current;
+    if (!view) {
+      toast({ title: "No editor", description: "Open a file in the editor first." });
+      return;
+    }
+    const ok = cmToggleBlockComment({
+      state: view.state,
+      dispatch: view.dispatch.bind(view),
+    });
+    if (!ok) {
+      const { from, to } = view.state.selection.main;
+      const selected = view.state.sliceDoc(from, to);
+      if (!selected) {
+        view.dispatch({
+          changes: { from, to, insert: "/*  */" },
+          selection: { anchor: from + 3 },
+        });
+      } else if (/^\/\*[\s\S]*\*\/$/.test(selected.trim())) {
+        const inner = selected.replace(/^\/\*\s?/, "").replace(/\s?\*\/$/, "");
+        view.dispatch({
+          changes: { from, to, insert: inner },
+          selection: { anchor: from, head: from + inner.length },
+        });
+      } else {
+        const wrapped = `/* ${selected} */`;
+        view.dispatch({
+          changes: { from, to, insert: wrapped },
+          selection: { anchor: from, head: from + wrapped.length },
+        });
+      }
+    }
+    view.focus();
+  }, []);
 
   const handleCopy = useCallback(async () => {
     const view = editorViewRef.current;
@@ -1112,19 +1506,108 @@ const Index = () => {
   const handlePaste = useCallback(async () => {
     const view = editorViewRef.current;
     if (!view) return;
-    const text = await navigator.clipboard.readText();
-    const pos = view.state.selection.main.head;
-    view.dispatch({ changes: { from: pos, to: pos, insert: text } });
+    try {
+      const text = await navigator.clipboard.readText();
+      const { from, to } = view.state.selection.main;
+      view.dispatch({
+        changes: { from, to, insert: text },
+        selection: { anchor: from + text.length },
+      });
+      view.focus();
+    } catch {
+      toast({
+        title: "Paste failed",
+        description: "Clipboard permission denied or unavailable.",
+      });
+    }
   }, []);
+
+  const handleCopyPath = useCallback(async () => {
+    const file = openFiles.find((f) => f.id === activeFileId);
+    const path = file?.path || file?.name;
+    if (!path) {
+      toast({ title: "No file path", description: "Open a file first." });
+      return;
+    }
+    await navigator.clipboard.writeText(path);
+    toast({ title: "Path copied", description: path });
+  }, [activeFileId, openFiles]);
+
+  const handleCopyRelativePath = useCallback(async () => {
+    const file = openFiles.find((f) => f.id === activeFileId);
+    const rel =
+      file?.relPath ||
+      relPathFromWorkspacePath(file?.path, workspace?.rootName) ||
+      file?.name;
+    if (!rel) {
+      toast({ title: "No relative path", description: "Open a workspace file first." });
+      return;
+    }
+    await navigator.clipboard.writeText(rel);
+    toast({ title: "Relative path copied", description: rel });
+  }, [activeFileId, openFiles, workspace?.rootName]);
+
+  const handleSelectAll = useCallback(() => {
+    runEditorCommand((view) => cmSelectAll({ state: view.state, dispatch: view.dispatch.bind(view) }));
+  }, [runEditorCommand]);
+
+  const handleCopyLineUp = useCallback(() => {
+    runEditorCommand((view) => cmCopyLineUp({ state: view.state, dispatch: view.dispatch.bind(view) }));
+  }, [runEditorCommand]);
+
+  const handleCopyLineDown = useCallback(() => {
+    runEditorCommand((view) =>
+      cmCopyLineDown({ state: view.state, dispatch: view.dispatch.bind(view) })
+    );
+  }, [runEditorCommand]);
+
+  const handleMoveLineUp = useCallback(() => {
+    runEditorCommand((view) => cmMoveLineUp({ state: view.state, dispatch: view.dispatch.bind(view) }));
+  }, [runEditorCommand]);
+
+  const handleMoveLineDown = useCallback(() => {
+    runEditorCommand((view) =>
+      cmMoveLineDown({ state: view.state, dispatch: view.dispatch.bind(view) })
+    );
+  }, [runEditorCommand]);
+
+  const handleDeleteLine = useCallback(() => {
+    runEditorCommand((view) => cmDeleteLine(view));
+  }, [runEditorCommand]);
 
   const handleFindInEditor = useCallback(() => {
     const view = editorViewRef.current;
-    if (view) openSearchPanel(view);
+    if (view) {
+      openSearchPanel(view);
+      view.focus();
+    }
   }, []);
+
   const handleReplaceInEditor = useCallback(() => {
     const view = editorViewRef.current;
-    if (view) openSearchPanel(view); // same panel; user can switch to Replace in the search bar
+    if (!view) return;
+    openSearchPanel(view);
+    // Focus the replace field in CodeMirror's search panel when present
+    requestAnimationFrame(() => {
+      const panel = view.dom.querySelector(".cm-search");
+      const inputs = panel?.querySelectorAll("input");
+      const replaceInput = inputs && inputs.length > 1 ? inputs[1] : null;
+      if (replaceInput instanceof HTMLInputElement) {
+        replaceInput.focus();
+        replaceInput.select();
+      } else {
+        view.focus();
+      }
+    });
   }, []);
+
+  const handleFindNext = useCallback(() => {
+    runEditorCommand((view) => cmFindNext(view));
+  }, [runEditorCommand]);
+
+  const handleFindPrevious = useCallback(() => {
+    runEditorCommand((view) => cmFindPrevious(view));
+  }, [runEditorCommand]);
 
   const handleOpenCommandPalette = useCallback(() => setCommandPaletteOpen(true), []);
   const handleShowExplorer = useCallback(() => {
@@ -1243,20 +1726,35 @@ const Index = () => {
 
   const handleSave = useCallback(async () => {
     const file = openFiles.find((f) => f.id === activeFileId);
-    if (!file?.dirty) return;
+    if (!file) return;
+
+    const relPath =
+      file.relPath || relPathFromWorkspacePath(file.path, workspace?.rootName) || null;
+    const canWriteHandle = Boolean(file.fileHandle);
+    const canWritePath =
+      Boolean(relPath) && Boolean(workspace?.rootLocalPath || workspace?.rootHandle);
+
+    if (!canWriteHandle && !canWritePath) {
+      await handleSaveAs();
+      return;
+    }
+
     try {
       if (file.fileHandle) {
         await writeFileContent(file.fileHandle, file.content);
-      } else if (file.relPath && workspace?.rootLocalPath) {
-        await writeWorkspaceFileAtPath(file.relPath, file.content, {
-          rootLocalPath: workspace.rootLocalPath,
+      } else if (relPath) {
+        await writeWorkspaceFileAtPath(relPath, file.content, {
+          rootHandle: workspace?.rootHandle ?? null,
+          rootLocalPath: workspace?.rootLocalPath ?? null,
           localServerUrl: settings.localServerUrl,
         });
-      } else {
-        return;
       }
       setOpenFiles((prev) =>
-        prev.map((f) => (f.id === activeFileId ? { ...f, dirty: false } : f))
+        prev.map((f) =>
+          f.id === activeFileId
+            ? { ...f, dirty: false, relPath: f.relPath || relPath || undefined }
+            : f
+        )
       );
     } catch (err) {
       toast({
@@ -1264,34 +1762,104 @@ const Index = () => {
         description: err instanceof Error ? err.message : "Permission or write error.",
       });
     }
-  }, [activeFileId, openFiles, workspace?.rootLocalPath, settings.localServerUrl]);
+  }, [activeFileId, openFiles, workspace, settings.localServerUrl, handleSaveAs]);
+
+  const handleRunActiveFile = useCallback(async () => {
+    const file = openFiles.find((f) => f.id === activeFileId);
+    if (!file) {
+      toast({ title: "No file open", description: "Open a .js, .ts, .tsx, or .py file to run." });
+      return;
+    }
+    const rel =
+      file.relPath ||
+      relPathFromWorkspacePath(file.path, workspace?.rootName) ||
+      null;
+    const cwd = workspaceLocalPathResolved;
+    if (!rel || !cwd) {
+      toast({
+        title: "Local folder path required",
+        description:
+          "Open a folder with a disk path (desktop Open Folder, or set path in Source Control) to run files.",
+      });
+      return;
+    }
+    const kind = runFileKindForPath(rel);
+    const command = buildRunActiveFileCommand(rel);
+    if (!command) {
+      toast({
+        title: "Cannot run this file type",
+        description: "Supported: JavaScript, TypeScript, and Python.",
+      });
+      return;
+    }
+    if (file.dirty) {
+      await handleSave();
+    }
+    const stamp = new Date().toLocaleTimeString();
+    appendOutput(`[${stamp}] Running (${runFileLabel(kind)}): ${command}`);
+    setPanelVisible(true);
+    setActivePanelTab("output");
+    try {
+      const result = await runWorkspaceCommand(settings.localServerUrl, cwd, command, 120_000);
+      if (result.stdout?.trim()) appendOutput(result.stdout.replace(/\r\n/g, "\n").trimEnd());
+      if (result.stderr?.trim()) appendOutput(result.stderr.replace(/\r\n/g, "\n").trimEnd());
+      appendOutput(
+        `[${new Date().toLocaleTimeString()}] Exit ${result.exitCode}${result.timedOut ? " (timed out)" : ""}${result.ok ? "" : " — failed"}`
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      appendOutput(`[run error] ${message}`);
+      toast({ title: "Could not run file", description: message });
+    }
+  }, [
+    activeFileId,
+    openFiles,
+    workspace?.rootName,
+    workspaceLocalPathResolved,
+    settings.localServerUrl,
+    handleSave,
+    appendOutput,
+  ]);
 
   const handleSaveAll = useCallback(async () => {
     const failed: string[] = [];
+    const savedIds = new Set<string>();
     for (const file of openFiles) {
       if (!file.dirty) continue;
-      if (!file.fileHandle && !(file.relPath && workspace?.rootLocalPath)) continue;
+      const relPath =
+        file.relPath || relPathFromWorkspacePath(file.path, workspace?.rootName) || null;
+      if (!file.fileHandle && !(relPath && (workspace?.rootLocalPath || workspace?.rootHandle))) {
+        failed.push(file.name ?? file.path ?? "file");
+        continue;
+      }
       try {
         if (file.fileHandle) {
           await writeFileContent(file.fileHandle, file.content);
-        } else if (file.relPath && workspace?.rootLocalPath) {
-          await writeWorkspaceFileAtPath(file.relPath, file.content, {
-            rootLocalPath: workspace.rootLocalPath,
+        } else if (relPath) {
+          await writeWorkspaceFileAtPath(relPath, file.content, {
+            rootHandle: workspace?.rootHandle ?? null,
+            rootLocalPath: workspace?.rootLocalPath ?? null,
             localServerUrl: settings.localServerUrl,
           });
         }
+        savedIds.add(file.id);
       } catch {
         failed.push(file.name ?? file.path ?? "file");
       }
     }
-    setOpenFiles((prev) => prev.map((f) => ({ ...f, dirty: false })));
+    if (savedIds.size > 0) {
+      setOpenFiles((prev) =>
+        prev.map((f) => (savedIds.has(f.id) ? { ...f, dirty: false } : f))
+      );
+    }
     if (failed.length > 0) {
       toast({
         title: "Could not save some files",
-        description: failed.length <= 2 ? failed.join(", ") : `${failed.length} files failed to save.`,
+        description:
+          failed.length <= 2 ? failed.join(", ") : `${failed.length} files failed to save.`,
       });
     }
-  }, [openFiles, workspace?.rootLocalPath, settings.localServerUrl]);
+  }, [openFiles, workspace, settings.localServerUrl]);
 
   useEffect(() => {
     if (!settings.autoSave || !openFiles.some((f) => f.dirty)) return;
@@ -1300,7 +1868,40 @@ const Index = () => {
   }, [openFiles, settings.autoSave, handleSaveAll]);
 
   useEffect(() => {
+    const clearChord = () => {
+      if (chordTimerRef.current) {
+        clearTimeout(chordTimerRef.current);
+        chordTimerRef.current = null;
+      }
+      setChordHint(null);
+    };
+
+    const startChord = (label: string) => {
+      if (chordTimerRef.current) clearTimeout(chordTimerRef.current);
+      setChordHint(label);
+      chordTimerRef.current = setTimeout(clearChord, DEFAULT_CHORD_TIMEOUT_MS);
+    };
+
     const onKey = (e: KeyboardEvent) => {
+      // --- Chord second key (must run first) ---
+      if (chordHint) {
+        if (isModifierOnlyKey(e.key)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === "Escape") {
+          clearChord();
+          return;
+        }
+        const hit = matchChordSecond(e, [
+          { key: "p", shift: false, run: () => void handleCopyPath() },
+          { key: "p", shift: true, run: () => void handleCopyRelativePath() },
+          { key: "i", shift: false, run: () => openInlineEdit() },
+        ]);
+        clearChord();
+        if (hit) hit.run();
+        return;
+      }
+
       if ((e.metaKey || e.ctrlKey) && e.key === "n" && !e.shiftKey) {
         e.preventDefault();
         handleNewFile();
@@ -1311,76 +1912,100 @@ const Index = () => {
         handleOpenFile();
         return;
       }
-      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s" && !e.shiftKey) {
         e.preventDefault();
-        handleSave();
+        void handleSave();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void handleSaveAs();
         return;
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "p") {
         e.preventDefault();
         setCommandPaletteOpen((open) => !open);
+        return;
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "p" && !e.shiftKey) {
         e.preventDefault();
         setQuickOpenOpen((open) => !open);
+        return;
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "g" && !e.shiftKey) {
         e.preventDefault();
         setGoToLineOpen(true);
+        return;
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "o") {
         e.preventDefault();
         setGoToSymbolOpen(true);
+        return;
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f" && !e.shiftKey) {
         e.preventDefault();
-        const view = editorViewRef.current;
-        if (view) openSearchPanel(view);
+        handleFindInEditor();
+        return;
       }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "h") {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "h" && !e.shiftKey) {
         e.preventDefault();
-        const view = editorViewRef.current;
-        if (view) openSearchPanel(view);
+        handleReplaceInEditor();
+        return;
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
         setSearchReplaceMode(false);
         setSearchOpen((open) => !open);
+        return;
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "h") {
         e.preventDefault();
         setSearchReplaceMode(true);
         setSearchOpen(true);
-      }
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "e") {
-        e.preventDefault();
-        setSidebarVisible(true);
+        return;
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "m") {
         e.preventDefault();
         setPanelVisible(true);
         setActivePanelTab("problems");
+        return;
       }
+      if ((e.metaKey || e.ctrlKey) && e.key === "F5") {
+        e.preventDefault();
+        void handleRunActiveFile();
+        return;
+      }
+      // Ctrl+K — chord leader (P = path, Shift+P = relative path, I = inline edit)
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k" && !e.shiftKey && !e.altKey) {
         e.preventDefault();
-        openInlineEdit();
+        startChord("Ctrl+K");
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        handleDeleteLine();
+        return;
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "i") {
         e.preventDefault();
         startComposer();
+        return;
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "e") {
         e.preventDefault();
         handleShowExplorer();
+        return;
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "g") {
         e.preventDefault();
         handleShowSourceControl();
+        return;
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "u") {
         e.preventDefault();
         setPanelVisible(true);
         setActivePanelTab("output");
+        return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key === "`") {
         e.preventDefault();
@@ -1390,25 +2015,100 @@ const Index = () => {
           setPanelVisible(true);
           setActivePanelTab("terminal");
         }
+        return;
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "b") {
         e.preventDefault();
-        appendOutput(`[${new Date().toLocaleTimeString()}] Run Task — use Terminal or run a build script.`);
+        appendOutput(
+          `[${new Date().toLocaleTimeString()}] Run Task — use Terminal or run a build script.`
+        );
         setPanelVisible(true);
         setActivePanelTab("output");
+        return;
       }
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
         e.preventDefault();
         setSettingsOpen(true);
+        return;
+      }
+      if (e.key === "F3") {
+        e.preventDefault();
+        if (e.shiftKey) handleFindPrevious();
+        else handleFindNext();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "/") {
+        e.preventDefault();
+        handleToggleLineComment();
+        return;
+      }
+      if (e.altKey && e.shiftKey && e.key.toLowerCase() === "a" && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        handleToggleBlockComment();
+        return;
+      }
+      // Selection / line shortcuts
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key === "ArrowUp") {
+        e.preventDefault();
+        if (e.shiftKey) handleCopyLineUp();
+        else handleMoveLineUp();
+        return;
+      }
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key === "ArrowDown") {
+        e.preventDefault();
+        if (e.shiftKey) handleCopyLineDown();
+        else handleMoveLineDown();
+        return;
       }
       if (e.key === "F4" && e.ctrlKey) {
         e.preventDefault();
         if (activeFileId) handleCloseFile(activeFileId);
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [handleSave, handleNewFile, handleOpenFile, activeFileId, handleCloseFile, appendOutput, handleNewTerminal, handleShowExplorer, handleShowSourceControl, openInlineEdit, startComposer]);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      if (chordTimerRef.current) clearTimeout(chordTimerRef.current);
+    };
+  }, [
+    chordHint,
+    handleSave,
+    handleSaveAs,
+    handleNewFile,
+    handleOpenFile,
+    activeFileId,
+    handleCloseFile,
+    appendOutput,
+    handleNewTerminal,
+    handleShowExplorer,
+    handleShowSourceControl,
+    openInlineEdit,
+    startComposer,
+    handleFindNext,
+    handleFindPrevious,
+    handleToggleLineComment,
+    handleToggleBlockComment,
+    handleCopyPath,
+    handleCopyRelativePath,
+    handleFindInEditor,
+    handleReplaceInEditor,
+    handleDeleteLine,
+    handleCopyLineUp,
+    handleCopyLineDown,
+    handleMoveLineUp,
+    handleMoveLineDown,
+    handleRunActiveFile,
+  ]);
+
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!openFiles.some((f) => f.dirty)) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [openFiles]);
 
   const handleSelectSearchMatch = useCallback(
     (m: SearchMatch) => {
@@ -1426,9 +2126,17 @@ const Index = () => {
   const commands: Command[] = [
     { id: "open-folder", label: "Open Folder", run: handleOpenFolder },
     { id: "open-composer", label: "Open Composer", shortcut: "Ctrl+Shift+I", run: startComposer },
-    { id: "inline-edit", label: "Inline Edit", shortcut: "Ctrl+K", run: openInlineEdit },
+    { id: "inline-edit", label: "Inline Edit", shortcut: "Ctrl+K I", run: openInlineEdit },
+    { id: "copy-path", label: "Copy Path", shortcut: "Ctrl+K P", run: () => void handleCopyPath() },
+    { id: "copy-relative-path", label: "Copy Relative Path", shortcut: "Ctrl+K Shift+P", run: () => void handleCopyRelativePath() },
     { id: "save", label: "Save", shortcut: "Ctrl+S", run: handleSave },
     { id: "save-all", label: "Save All", run: handleSaveAll },
+    { id: "undo", label: "Undo", shortcut: "Ctrl+Z", run: handleUndo },
+    { id: "redo", label: "Redo", shortcut: "Ctrl+Y", run: handleRedo },
+    { id: "find", label: "Find", shortcut: "Ctrl+F", run: handleFindInEditor },
+    { id: "replace", label: "Replace", shortcut: "Ctrl+H", run: handleReplaceInEditor },
+    { id: "find-next", label: "Find Next", shortcut: "F3", run: handleFindNext },
+    { id: "find-previous", label: "Find Previous", shortcut: "Shift+F3", run: handleFindPrevious },
     { id: "go-to-file", label: "Go to File...", shortcut: "Ctrl+P", run: () => setQuickOpenOpen(true) },
     { id: "go-to-line", label: "Go to Line/Column...", shortcut: "Ctrl+G", run: () => setGoToLineOpen(true) },
     { id: "go-to-symbol", label: "Go to Symbol in Editor...", shortcut: "Ctrl+Shift+O", run: handleOpenGoToSymbol },
@@ -1444,6 +2152,8 @@ const Index = () => {
       run: handleShowOutput,
     },
     { id: "run-task", label: "Run Task...", shortcut: "Ctrl+Shift+B", run: handleRunTask },
+    { id: "run-active-file", label: "Run Active File", shortcut: "Ctrl+F5", run: () => void handleRunActiveFile() },
+    { id: "show-problems", label: "Problems: Show", shortcut: "Ctrl+Shift+M", run: handleShowProblems },
   ];
 
   const flatFileList = workspace
@@ -1519,7 +2229,14 @@ const Index = () => {
     }
     let cancelled = false;
     void (async () => {
-      const flat = getFlatFileList(workspace.topLevelNodes, childCache);
+      const flat = await collectFilesForIndex({
+        rootName: workspace.rootName,
+        rootHandle: workspace.rootHandle,
+        rootLocalPath: workspace.rootLocalPath,
+        localServerUrl: settings.localServerUrl,
+        topLevelNodes: workspace.topLevelNodes,
+        childCache,
+      });
       const fsOpts = {
         rootLocalPath: workspace.rootLocalPath,
         localServerUrl: settings.localServerUrl,
@@ -1616,15 +2333,29 @@ const Index = () => {
   const handleSelectProblem = useCallback(
     (problem: ProblemEntry) => {
       pushCurrentPosition();
-      if (activeFileId === problem.file) {
+      const problemPath = problem.file.replace(/\\/g, "/");
+      const active = openFiles.find((f) => f.id === activeFileId);
+      const activePath = (active?.path || "").replace(/\\/g, "/");
+      if (activePath && (activePath === problemPath || activePath.endsWith("/" + problemPath) || problemPath.endsWith("/" + activePath))) {
         handleGoToLine(problem.line ?? 1);
         return;
       }
       setPendingProblemGoTo({ path: problem.file, line: problem.line ?? 1 });
-      const entry = flatFileList.find((e) => e.path === problem.file);
+      const entry =
+        flatFileList.find((e) => e.path.replace(/\\/g, "/") === problemPath) ||
+        flatFileList.find((e) => {
+          const p = e.path.replace(/\\/g, "/");
+          return p.endsWith("/" + problemPath) || problemPath.endsWith("/" + p) || p.endsWith(problemPath);
+        });
       if (entry) openFileByEntry(entry);
+      else {
+        toast({
+          title: "Could not open problem file",
+          description: problem.file,
+        });
+      }
     },
-    [activeFileId, flatFileList, openFileByEntry, handleGoToLine, pushCurrentPosition]
+    [activeFileId, openFiles, flatFileList, openFileByEntry, handleGoToLine, pushCurrentPosition]
   );
 
   useEffect(() => {
@@ -1681,6 +2412,7 @@ const Index = () => {
     showOutput: handleShowOutput,
     showProblems: handleShowProblems,
     runTask: handleRunTask,
+    runActiveFile: () => void handleRunActiveFile(),
     openGoToFile: handleOpenGoToFile,
     openGoToLineDialog: handleOpenGoToLineDialog,
     openGoToSymbol: handleOpenGoToSymbol,
@@ -1691,10 +2423,20 @@ const Index = () => {
     cut: handleCut,
     copy: handleCopy,
     paste: handlePaste,
+    copyPath: handleCopyPath,
+    copyRelativePath: handleCopyRelativePath,
     toggleLineComment: handleToggleLineComment,
     toggleBlockComment: handleToggleBlockComment,
     findInEditor: handleFindInEditor,
     replaceInEditor: handleReplaceInEditor,
+    findNext: handleFindNext,
+    findPrevious: handleFindPrevious,
+    selectAll: handleSelectAll,
+    copyLineUp: handleCopyLineUp,
+    copyLineDown: handleCopyLineDown,
+    moveLineUp: handleMoveLineUp,
+    moveLineDown: handleMoveLineDown,
+    deleteLine: handleDeleteLine,
     showWelcome: handleShowWelcome,
     openAbout: handleOpenAbout,
     openDocumentation: handleOpenDocumentation,
@@ -1934,6 +2676,8 @@ const Index = () => {
                       activeId={activeFileId || null}
                       onSelect={handleSelectFile}
                       onClose={handleCloseFile}
+                      onSave={() => void handleSave()}
+                      canSave={Boolean(activeFile)}
                     />
                     <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-cursor-editor">
                       {activeFile ? (
@@ -1942,6 +2686,7 @@ const Index = () => {
                           content={activeFile.content}
                           filePath={activeFile.path ?? activeFile.name}
                           onChange={handleEditorChange}
+                          onSave={() => void handleSave()}
                           className="h-full min-h-0 min-w-0 w-full overflow-auto text-sm"
                           fontSize={settings.fontSize}
                           tabSize={settings.tabSize}
@@ -2033,6 +2778,8 @@ const Index = () => {
                       activeId={activeFileId || null}
                       onSelect={handleSelectFile}
                       onClose={handleCloseFile}
+                      onSave={() => void handleSave()}
+                      canSave={Boolean(activeFile)}
                     />
                     <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-cursor-editor">
                       {activeFile ? (
@@ -2041,6 +2788,7 @@ const Index = () => {
                           content={activeFile.content}
                           filePath={activeFile.path ?? activeFile.name}
                           onChange={handleEditorChange}
+                          onSave={() => void handleSave()}
                           className="h-full min-h-0 min-w-0 w-full overflow-auto text-sm"
                           fontSize={settings.fontSize}
                           tabSize={settings.tabSize}
@@ -2171,6 +2919,14 @@ const Index = () => {
             : undefined
         }
         position={activeFile ? editorPosition : null}
+        indexStatus={
+          workspace
+            ? codebaseIndex?.fileCount
+              ? `Indexed ${codebaseIndex.fileCount} files`
+              : "Indexing…"
+            : null
+        }
+        chordHint={chordHint}
       />
     </div>
     </EditorActionsProvider>

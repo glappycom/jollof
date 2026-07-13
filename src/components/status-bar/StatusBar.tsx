@@ -10,6 +10,10 @@ interface StatusBarProps {
   language?: string;
   /** Cursor position "Ln 1, Col 1" or null to hide */
   position?: { line: number; column: number } | null;
+  /** @codebase index status, e.g. "Indexed 42 files" */
+  indexStatus?: string | null;
+  /** Active key chord waiting for second key, e.g. "Ctrl+K" */
+  chordHint?: string | null;
 }
 
 export default function StatusBar({
@@ -18,6 +22,8 @@ export default function StatusBar({
   encoding = "UTF-8",
   language,
   position = null,
+  indexStatus = null,
+  chordHint = null,
 }: StatusBarProps) {
   return (
     <div
@@ -31,6 +37,20 @@ export default function StatusBar({
       <div className="flex items-center gap-4">
         <span title="Branch" aria-label={branch !== "—" ? `Branch: ${branch}` : undefined}>{branch}</span>
         <span title="Encoding" aria-label={`Encoding: ${encoding}`}>{encoding}</span>
+        {indexStatus ? (
+          <span title="@codebase index" aria-label={indexStatus}>
+            {indexStatus}
+          </span>
+        ) : null}
+        {chordHint ? (
+          <span
+            className="text-cursor-accent"
+            title="Press the next key in the chord, or Esc to cancel"
+            aria-label={`Chord ${chordHint} waiting`}
+          >
+            ({chordHint}) waiting…
+          </span>
+        ) : null}
       </div>
       <div className="flex items-center gap-4">
         {language ? (

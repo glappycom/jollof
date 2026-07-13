@@ -36,6 +36,17 @@ interface RunAgentTurnOptions {
   ctx: AgentWorkspaceContext;
   setSession: React.Dispatch<React.SetStateAction<ActiveAgent | null>>;
   setStreaming: (v: boolean) => void;
+  /**
+   * History to use instead of session.messages (e.g. after appending a command result).
+   * When set, this is the conversation before the new user turn.
+   */
+  historyMessages?: AgentMessage[];
+  /** Hide the synthetic user nudge in the chat UI (still sent to the model). */
+  hideUserMessage?: boolean;
+  /** Skip @context enrichment (used for tool-result continues). */
+  skipContextBlock?: boolean;
+  /** When true, ignore jollof-edit / jollof-run in the response (Ask / Plan). */
+  disallowActions?: boolean;
 }
 
 export async function runAgentTurn({
@@ -47,15 +58,21 @@ export async function runAgentTurn({
   ctx,
   setSession,
   setStreaming,
+  historyMessages,
+  hideUserMessage = false,
+  skipContextBlock = false,
+  disallowActions = false,
 }: RunAgentTurnOptions): Promise<void> {
   const assistantId = crypto.randomUUID();
   const hasApi = Boolean(settings.agentApiKey?.trim());
+  const prior = historyMessages ?? session.messages;
 
   const userMsg: AgentMessage = {
     id: crypto.randomUUID(),
     role: "user",
     content,
     ...(images?.length ? { images } : {}),
+    ...(hideUserMessage ? { hidden: true } : {}),
   };
 
   const assistantMsg: AgentMessage = {
@@ -64,9 +81,12 @@ export async function runAgentTurn({
     content: hasApi ? "" : "Agent is not connected yet. Set API key in Preferences → Agent.",
   };
 
-  setSession((prev) =>
-    prev ? { ...prev, messages: [...prev.messages, userMsg, assistantMsg] } : null
-  );
+  setSession((prev) => {
+    if (!prev) return null;
+    // Prefer explicit history when provided; otherwise append to whatever is current
+    const base = historyMessages ?? prev.messages;
+    return { ...prev, messages: [...base, userMsg, assistantMsg] };
+  });
 
   if (!hasApi) return;
 
@@ -76,33 +96,37 @@ export async function runAgentTurn({
   const openPaths = new Set(
     ctx.openFiles.map((f) => f.path).filter(Boolean) as string[]
   );
-  const mentionedFiles = await loadMentionedWorkspaceFiles(
-    content,
-    ctx.workspace?.rootName ?? "",
-    flatFiles,
-    openPaths,
-    {
-      rootLocalPath: ctx.workspace?.rootLocalPath,
-      localServerUrl: ctx.localServerUrl,
-    }
-  );
+  const mentionedFiles = skipContextBlock
+    ? []
+    : await loadMentionedWorkspaceFiles(
+        content,
+        ctx.workspace?.rootName ?? "",
+        flatFiles,
+        openPaths,
+        {
+          rootLocalPath: ctx.workspace?.rootLocalPath,
+          localServerUrl: ctx.localServerUrl,
+        }
+      );
 
-  const contextBlock = buildAgentContextBlock({
-    message: content,
-    openFiles: ctx.openFiles
-      .filter((f) => f.path)
-      .map((f) => ({ path: f.path!, content: f.content })),
-    activeFilePath: ctx.openFiles.find((f) => f.id === ctx.activeFileId)?.path,
-    selection: ctx.getEditorSelection(),
-    workspaceFiles: mentionedFiles,
-    codebaseIndex: ctx.codebaseIndex,
-  });
+  const contextBlock = skipContextBlock
+    ? ""
+    : buildAgentContextBlock({
+        message: content,
+        openFiles: ctx.openFiles
+          .filter((f) => f.path)
+          .map((f) => ({ path: f.path!, content: f.content })),
+        activeFilePath: ctx.openFiles.find((f) => f.id === ctx.activeFileId)?.path,
+        selection: ctx.getEditorSelection(),
+        workspaceFiles: mentionedFiles,
+        codebaseIndex: ctx.codebaseIndex,
+      });
 
   const userContentWithContext = content + contextBlock;
 
   const conversation: AgentChatMessage[] = [
     { role: "system", content: systemPrompt },
-    ...session.messages.map((m) => {
+    ...prior.map((m) => {
       if (m.role === "user") {
         const msg: AgentChatMessage = { role: "user", content: m.content };
         if (m.images?.length) msg.images = m.images;
@@ -144,6 +168,7 @@ export async function runAgentTurn({
           if (!prev) return prev;
           const last = prev.messages.find((m) => m.id === assistantId);
           if (!last?.content) return prev;
+          if (disallowActions) return prev;
           const parsed = parseEditsFromResponse(last.content);
           const parsedRuns = parseRunsFromResponse(last.content);
           if (parsed.length === 0 && parsedRuns.length === 0) return prev;

@@ -62,7 +62,7 @@ export default function InlineEditModal({
       >
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold text-cursor-text">
-            Edit selection <span className="text-cursor-text-muted">· Ctrl+K</span>
+            Edit selection <span className="text-cursor-text-muted">· Ctrl+K I</span>
           </h2>
           <button
             type="button"
