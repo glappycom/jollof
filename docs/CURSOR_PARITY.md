@@ -70,7 +70,7 @@ Last updated: 2026-07-12
 | Source control panel | ✅ | Stage, unstage, diff, commit via local server |
 | Diff / stage / commit | ✅ | Requires workspace local path in Source Control |
 | Run active file | ✅ | Ctrl+F5 / Run menu — JS/TS via node/tsx, Python via py/python3; Output panel |
-| Debug / breakpoints | ⬜ | — |
+| Debug / breakpoints | 🟡 | Debug Console + F5 launch configs (auto + `.vscode/launch.json`); breakpoints/DAP deferred |
 | Tasks (tasks.json) | ⬜ | Run Task is placeholder |
 
 ---

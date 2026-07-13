@@ -17,8 +17,11 @@ const ViewMenu = () => {
       <MenuSeparator />
       <MenuItem label="Problems" shortcut="Ctrl+Shift+M" onClick={actions?.showProblems} />
       <MenuItem label="Output" shortcut="Ctrl+Shift+U" onClick={actions?.showOutput} />
+      <MenuItem
+        label="Debug Console"
+        onClick={() => actions?.showDebugConsole?.()}
+      />
       <MenuItem label="Terminal" shortcut="Ctrl+`" onClick={actions?.showTerminal} />
-      {/* Leftover: Debug Console (Ctrl+Shift+Alt+Y) */}
     </div>
   );
 };

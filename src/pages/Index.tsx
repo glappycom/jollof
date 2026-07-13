@@ -65,8 +65,12 @@ import { terminalWsUrl } from "@/lib/local-server";
 import { isTauri } from "@/lib/platform";
 import { openDesktopFolder, loadDesktopDirectoryChildren, openFolderByAbsolutePath } from "@/lib/desktop-workspace";
 import { runWorkspaceCommand } from "@/lib/run-api";
+import { resolveDebugConfigs } from "@/lib/debug-launch";
 import { formatRunResultForChat, buildContinueAfterRunPrompt } from "@/lib/agent-runs";
 import { fetchGitStatus } from "@/lib/git-api";
+import { useOutput } from "@/contexts/OutputContext";
+import { useDebug } from "@/contexts/DebugContext";
+import { toast } from "@/hooks/use-toast";
 import QuickOpen from "@/components/quick-open/QuickOpen";
 import SearchPanel from "@/components/search/SearchPanel";
 import PanelTabs, { type PanelTabId } from "@/components/panel/PanelTabs";
@@ -88,8 +92,6 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { EditorActionsProvider } from "@/contexts/EditorActionsContext";
 import { useSettings } from "@/contexts/SettingsContext";
-import { useOutput } from "@/contexts/OutputContext";
-import { toast } from "@/hooks/use-toast";
 
 const defaultFile: OpenFile = {
   id: "welcome",
@@ -895,6 +897,15 @@ const Index = () => {
   }, []);
 
   const { append: appendOutput } = useOutput();
+  const {
+    append: appendDebug,
+    clear: clearDebug,
+    configs: debugConfigs,
+    setConfigs: setDebugConfigs,
+    selectedId: debugSelectedId,
+    setSelectedId: setDebugSelectedId,
+    setRunning: setDebugRunning,
+  } = useDebug();
   const activeFile = openFiles.find((f) => f.id === activeFileId) ?? null;
 
   // Fast buffer diagnostics (syntactic + semantic across open TS/JS files)
@@ -1821,6 +1832,143 @@ const Index = () => {
     appendOutput,
   ]);
 
+  const handleShowDebugConsole = useCallback(() => {
+    setPanelVisible(true);
+    setActivePanelTab("debug");
+  }, []);
+
+  const handleStopDebugging = useCallback(() => {
+    setDebugRunning(false);
+    appendDebug(
+      `[${new Date().toLocaleTimeString()}] Stop requested (process may still finish on the server).`
+    );
+  }, [appendDebug, setDebugRunning]);
+
+  const handleStartDebugging = useCallback(async () => {
+    const cwd = workspaceLocalPathResolved;
+    if (!cwd) {
+      toast({
+        title: "Local folder path required",
+        description: "Open a folder with a disk path to run debug configurations.",
+      });
+      handleShowDebugConsole();
+      return;
+    }
+    const file = openFiles.find((f) => f.id === activeFileId);
+    const rel =
+      file?.relPath ||
+      relPathFromWorkspacePath(file?.path, workspace?.rootName) ||
+      null;
+
+    let configs = debugConfigs;
+    if (configs.length === 0) {
+      configs = await resolveDebugConfigs({
+        localServerUrl: settings.localServerUrl,
+        cwd,
+        fileRel: rel,
+      });
+      setDebugConfigs(configs);
+      if (configs[0] && !debugSelectedId) setDebugSelectedId(configs[0].id);
+    }
+
+    const selected =
+      configs.find((c) => c.id === (debugSelectedId || configs[0]?.id)) || configs[0];
+    if (!selected) {
+      toast({
+        title: "No debug configuration",
+        description: "Open a runnable file (.js/.ts/.py) or add .vscode/launch.json.",
+      });
+      handleShowDebugConsole();
+      return;
+    }
+
+    if (file?.dirty && selected.id === "auto-current-file") {
+      await handleSave();
+    }
+
+    setDebugSelectedId(selected.id);
+    handleShowDebugConsole();
+    clearDebug();
+    setDebugRunning(true);
+    const stamp = new Date().toLocaleTimeString();
+    appendDebug(`[${stamp}] ${selected.name}`);
+    appendDebug(`> ${selected.command}`);
+    try {
+      const result = await runWorkspaceCommand(
+        settings.localServerUrl,
+        cwd,
+        selected.command,
+        5 * 60_000
+      );
+      if (result.stdout?.trim()) appendDebug(result.stdout.replace(/\r\n/g, "\n").trimEnd());
+      if (result.stderr?.trim()) appendDebug(result.stderr.replace(/\r\n/g, "\n").trimEnd());
+      appendDebug(
+        `[${new Date().toLocaleTimeString()}] Exit ${result.exitCode}${result.timedOut ? " (timed out)" : ""}${result.ok ? "" : " — failed"}`
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      appendDebug(`[error] ${message}`);
+      toast({ title: "Debug run failed", description: message });
+    } finally {
+      setDebugRunning(false);
+    }
+  }, [
+    workspaceLocalPathResolved,
+    openFiles,
+    activeFileId,
+    workspace?.rootName,
+    debugConfigs,
+    debugSelectedId,
+    settings.localServerUrl,
+    setDebugConfigs,
+    setDebugSelectedId,
+    handleShowDebugConsole,
+    handleSave,
+    clearDebug,
+    setDebugRunning,
+    appendDebug,
+  ]);
+
+  useEffect(() => {
+    const cwd = workspaceLocalPathResolved;
+    if (!cwd) {
+      setDebugConfigs([]);
+      return;
+    }
+    const file = openFiles.find((f) => f.id === activeFileId);
+    const rel =
+      file?.relPath ||
+      relPathFromWorkspacePath(file?.path, workspace?.rootName) ||
+      null;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      void resolveDebugConfigs({
+        localServerUrl: settings.localServerUrl,
+        cwd,
+        fileRel: rel,
+      }).then((configs) => {
+        if (cancelled) return;
+        setDebugConfigs(configs);
+        setDebugSelectedId((prev) => {
+          if (prev && configs.some((c) => c.id === prev)) return prev;
+          return configs[0]?.id ?? null;
+        });
+      });
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [
+    workspaceLocalPathResolved,
+    workspace?.rootName,
+    activeFileId,
+    openFiles,
+    settings.localServerUrl,
+    setDebugConfigs,
+    setDebugSelectedId,
+  ]);
+
   const handleSaveAll = useCallback(async () => {
     const failed: string[] = [];
     const savedIds = new Set<string>();
@@ -1975,6 +2123,11 @@ const Index = () => {
         void handleRunActiveFile();
         return;
       }
+      if (e.key === "F5" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        void handleStartDebugging();
+        return;
+      }
       // Ctrl+K — chord leader (P = path, Shift+P = relative path, I = inline edit)
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k" && !e.shiftKey && !e.altKey) {
         e.preventDefault();
@@ -2098,6 +2251,7 @@ const Index = () => {
     handleMoveLineUp,
     handleMoveLineDown,
     handleRunActiveFile,
+    handleStartDebugging,
   ]);
 
   useEffect(() => {
@@ -2153,6 +2307,9 @@ const Index = () => {
     },
     { id: "run-task", label: "Run Task...", shortcut: "Ctrl+Shift+B", run: handleRunTask },
     { id: "run-active-file", label: "Run Active File", shortcut: "Ctrl+F5", run: () => void handleRunActiveFile() },
+    { id: "start-debugging", label: "Start Debugging", shortcut: "F5", run: () => void handleStartDebugging() },
+    { id: "stop-debugging", label: "Stop Debugging", run: handleStopDebugging },
+    { id: "show-debug-console", label: "Debug Console: Show", run: handleShowDebugConsole },
     { id: "show-problems", label: "Problems: Show", shortcut: "Ctrl+Shift+M", run: handleShowProblems },
   ];
 
@@ -2413,6 +2570,9 @@ const Index = () => {
     showProblems: handleShowProblems,
     runTask: handleRunTask,
     runActiveFile: () => void handleRunActiveFile(),
+    startDebugging: () => void handleStartDebugging(),
+    stopDebugging: handleStopDebugging,
+    showDebugConsole: handleShowDebugConsole,
     openGoToFile: handleOpenGoToFile,
     openGoToLineDialog: handleOpenGoToLineDialog,
     openGoToSymbol: handleOpenGoToSymbol,

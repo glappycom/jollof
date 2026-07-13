@@ -34,6 +34,12 @@ export interface EditorActions {
   runTask: () => void;
   /** Run the active editor file (JS/TS/Python) via local server. */
   runActiveFile: () => void;
+  /** Start selected debug configuration (F5). */
+  startDebugging?: () => void;
+  /** Mark debug session stopped (process is fire-and-forget via /api/run). */
+  stopDebugging?: () => void;
+  /** Show Debug Console panel */
+  showDebugConsole?: () => void;
   /** Go menu */
   openGoToFile: () => void;
   openGoToLineDialog: () => void;

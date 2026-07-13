@@ -40,7 +40,7 @@ function getSnippetHint(active: PanelTabId, problemCount?: number, snippet?: str
   if (active === "terminal") return "PS C:\\...> · real shell (npm run dev)";
   if (active === "output") return "Build and task output";
   if (active === "problems") return problemCount != null && problemCount > 0 ? `${problemCount} issue(s)` : "No problems";
-  if (active === "debug") return "Run and debug";
+  if (active === "debug") return "Debug · F5 to start";
   return "Drag up to expand";
 }
 

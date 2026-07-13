@@ -15,15 +15,15 @@ function getMenuFocusables(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(MENU_FOCUSABLE));
 }
 
-const menus = [
-  { key: "File", component: <FileMenu /> },
-  { key: "Edit", component: <EditMenu /> },
-  { key: "View", component: <ViewMenu /> },
-  { key: "Go", component: <GoMenu /> },
-  { key: "Run", component: <RunMenu /> },
-  { key: "Terminal", component: <TerminalMenu /> },
-  { key: "Help", component: <HelpMenu /> },
-];
+const MENU_DEFS = [
+  { key: "File", Menu: FileMenu },
+  { key: "Edit", Menu: EditMenu },
+  { key: "View", Menu: ViewMenu },
+  { key: "Go", Menu: GoMenu },
+  { key: "Run", Menu: RunMenu },
+  { key: "Terminal", Menu: TerminalMenu },
+  { key: "Help", Menu: HelpMenu },
+] as const;
 
 const MenuBar = () => {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -40,7 +40,6 @@ const MenuBar = () => {
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  // When a menu opens, focus the first focusable item inside it
   useEffect(() => {
     if (!openMenu) return;
     const panel = document.getElementById(`menu-${openMenu.toLowerCase()}`);
@@ -50,7 +49,6 @@ const MenuBar = () => {
     if (first) requestAnimationFrame(() => first.focus());
   }, [openMenu]);
 
-  // Keyboard: Escape close, Arrow Left/Right switch menus, Arrow Down/Up in panel
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!barRef.current) return;
@@ -58,7 +56,7 @@ const MenuBar = () => {
       if (openMenu) {
         const panel = document.getElementById(`menu-${openMenu.toLowerCase()}`);
         const triggerId = `menubar-${openMenu.toLowerCase()}`;
-        const currentIndex = menus.findIndex((m) => m.key === openMenu);
+        const currentIndex = MENU_DEFS.findIndex((m) => m.key === openMenu);
 
         if (e.key === "Escape") {
           e.preventDefault();
@@ -67,19 +65,23 @@ const MenuBar = () => {
           return;
         }
 
-        if (e.key === "ArrowRight" && currentIndex < menus.length - 1) {
+        if (e.key === "ArrowRight" && currentIndex < MENU_DEFS.length - 1) {
           e.preventDefault();
-          const next = menus[currentIndex + 1]!;
+          const next = MENU_DEFS[currentIndex + 1]!;
           setOpenMenu(next.key);
-          requestAnimationFrame(() => document.getElementById(`menubar-${next.key.toLowerCase()}`)?.focus());
+          requestAnimationFrame(() =>
+            document.getElementById(`menubar-${next.key.toLowerCase()}`)?.focus()
+          );
           return;
         }
 
         if (e.key === "ArrowLeft" && currentIndex > 0) {
           e.preventDefault();
-          const prev = menus[currentIndex - 1]!;
+          const prev = MENU_DEFS[currentIndex - 1]!;
           setOpenMenu(prev.key);
-          requestAnimationFrame(() => document.getElementById(`menubar-${prev.key.toLowerCase()}`)?.focus());
+          requestAnimationFrame(() =>
+            document.getElementById(`menubar-${prev.key.toLowerCase()}`)?.focus()
+          );
           return;
         }
 
@@ -101,14 +103,13 @@ const MenuBar = () => {
           return;
         }
       } else {
-        // No menu open: Enter/Space/ArrowDown opens menu; Arrow Left/Right move between triggers
         const target = e.target as HTMLElement;
         if (!barRef.current.contains(target)) return;
         const trigger = target.closest?.("[id^='menubar-']") as HTMLElement | null;
         if (!trigger) return;
         if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown") {
           const key = trigger.id.replace("menubar-", "");
-          const menu = menus.find((m) => m.key.toLowerCase() === key);
+          const menu = MENU_DEFS.find((m) => m.key.toLowerCase() === key);
           if (menu) {
             e.preventDefault();
             setOpenMenu(menu.key);
@@ -116,9 +117,11 @@ const MenuBar = () => {
           return;
         }
         if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
-          const idx = menus.findIndex((m) => trigger.id === `menubar-${m.key.toLowerCase()}`);
+          const idx = MENU_DEFS.findIndex(
+            (m) => trigger.id === `menubar-${m.key.toLowerCase()}`
+          );
           if (idx === -1) return;
-          const next = e.key === "ArrowRight" ? menus[idx + 1] : menus[idx - 1];
+          const next = e.key === "ArrowRight" ? MENU_DEFS[idx + 1] : MENU_DEFS[idx - 1];
           if (next) {
             e.preventDefault();
             document.getElementById(`menubar-${next.key.toLowerCase()}`)?.focus();
@@ -132,39 +135,36 @@ const MenuBar = () => {
   }, [openMenu]);
 
   return (
-    <div ref={barRef} className="flex items-center gap-1">
-      {menus.map((menu) => (
-        <div key={menu.key} className="relative">
+    <div ref={barRef} className="relative z-[100] flex items-center gap-1">
+      {MENU_DEFS.map(({ key, Menu }) => (
+        <div key={key} className="relative">
           <button
             type="button"
-            id={`menubar-${menu.key.toLowerCase()}`}
+            id={`menubar-${key.toLowerCase()}`}
             className={cn(
               "rounded-sm px-2 py-0.5 text-[11px] font-medium text-cursor-text-muted transition-colors duration-fast hover:bg-cursor-border hover:text-cursor-text",
-              openMenu === menu.key && "bg-cursor-border text-cursor-text"
+              openMenu === key && "bg-cursor-border text-cursor-text"
             )}
-            onClick={() =>
-              setOpenMenu((prev) => (prev === menu.key ? null : menu.key))
-            }
+            onClick={() => setOpenMenu((prev) => (prev === key ? null : key))}
             aria-haspopup="true"
-            aria-expanded={openMenu === menu.key}
-            aria-controls={openMenu === menu.key ? `menu-${menu.key.toLowerCase()}` : undefined}
+            aria-expanded={openMenu === key}
+            aria-controls={openMenu === key ? `menu-${key.toLowerCase()}` : undefined}
           >
-            {menu.key}
+            {key}
           </button>
-          {openMenu === menu.key ? (
+          {openMenu === key ? (
             <div
-              id={`menu-${menu.key.toLowerCase()}`}
+              id={`menu-${key.toLowerCase()}`}
               role="menu"
-              className="absolute left-0 top-full z-50 mt-1 w-56 rounded border border-cursor-border/80 bg-cursor-dropdown p-1 text-[11px] text-cursor-text shadow-dropdown"
+              className="absolute left-0 top-full z-[110] mt-1 max-h-[min(70vh,420px)] w-56 overflow-y-auto rounded border border-cursor-border/80 bg-cursor-dropdown p-1 text-[11px] text-cursor-text shadow-dropdown"
               onClick={(e) => {
                 const target = e.target as HTMLElement;
-                // Close after activating a real action (not submenu open toggles)
                 if (target.closest("[data-submenu-trigger]")) return;
                 const item = target.closest('button[type="button"]');
                 if (item) setOpenMenu(null);
               }}
             >
-              {menu.component}
+              <Menu />
             </div>
           ) : null}
         </div>
