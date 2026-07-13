@@ -15,7 +15,7 @@ Last updated: 2026-07-12
 | Resizable sidebars + bottom panel | ✅ | Grid layout, maximize chat/panel |
 | Editor tabs | ✅ | Dirty indicator, close |
 | Command palette | ✅ | Ctrl+Shift+P |
-| Menu bar (File, Edit, View, …) | 🟡 | File + Edit menus/submenus wired; View/Go/others partial |
+| Menu bar (File, Edit, View, …) | 🟡 | File + Edit + Run menus/submenus wired; View/Go/others partial |
 | Status bar | ✅ | Line/col, basic info |
 | Dark / light theme | 🟡 | Theme sync exists; polish ongoing |
 | Orange / Jollof accent | ✅ | Replaces default blue accent |

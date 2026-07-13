@@ -11,6 +11,9 @@ interface DebugContextValue {
   setSelectedId: (id: string | null | ((prev: string | null) => string | null)) => void;
   running: boolean;
   setRunning: (running: boolean) => void;
+  /** package.json scripts for Run Task submenu */
+  packageScripts: Record<string, string>;
+  setPackageScripts: (scripts: Record<string, string>) => void;
 }
 
 const DebugContext = createContext<DebugContextValue | null>(null);
@@ -28,6 +31,8 @@ export function useDebug() {
       setSelectedId: (_id: string | null | ((prev: string | null) => string | null)) => {},
       running: false,
       setRunning: (_r: boolean) => {},
+      packageScripts: {} as Record<string, string>,
+      setPackageScripts: (_s: Record<string, string>) => {},
     };
   }
   return ctx;
@@ -38,6 +43,7 @@ export function DebugProvider({ children }: { children: React.ReactNode }) {
   const [configs, setConfigs] = useState<DebugConfig[]>([]);
   const [selectedId, setSelectedIdState] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [packageScripts, setPackageScripts] = useState<Record<string, string>>({});
 
   const append = useCallback((line: string) => {
     setLines((prev) => [...prev, line]);
@@ -49,6 +55,7 @@ export function DebugProvider({ children }: { children: React.ReactNode }) {
     },
     []
   );
+
   return (
     <DebugContext.Provider
       value={{
@@ -61,6 +68,8 @@ export function DebugProvider({ children }: { children: React.ReactNode }) {
         setSelectedId,
         running,
         setRunning,
+        packageScripts,
+        setPackageScripts,
       }}
     >
       {children}

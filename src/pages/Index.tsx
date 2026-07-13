@@ -65,7 +65,9 @@ import { terminalWsUrl } from "@/lib/local-server";
 import { isTauri } from "@/lib/platform";
 import { openDesktopFolder, loadDesktopDirectoryChildren, openFolderByAbsolutePath } from "@/lib/desktop-workspace";
 import { runWorkspaceCommand } from "@/lib/run-api";
-import { resolveDebugConfigs } from "@/lib/debug-launch";
+import { resolveDebugConfigs, loadPackageScripts } from "@/lib/debug-launch";
+import { DEFAULT_LAUNCH_JSON, LAUNCH_JSON_REL } from "@/lib/launch-json-template";
+import { fsReadFile } from "@/lib/fs-api";
 import { formatRunResultForChat, buildContinueAfterRunPrompt } from "@/lib/agent-runs";
 import { fetchGitStatus } from "@/lib/git-api";
 import { useOutput } from "@/contexts/OutputContext";
@@ -905,6 +907,8 @@ const Index = () => {
     selectedId: debugSelectedId,
     setSelectedId: setDebugSelectedId,
     setRunning: setDebugRunning,
+    packageScripts,
+    setPackageScripts,
   } = useDebug();
   const activeFile = openFiles.find((f) => f.id === activeFileId) ?? null;
 
@@ -1681,11 +1685,100 @@ const Index = () => {
     setPanelVisible(true);
     setActivePanelTab("problems");
   }, []);
-  const handleRunTask = useCallback(() => {
-    appendOutput(`[${new Date().toLocaleTimeString()}] Run Task — use Terminal or run a build script (e.g. npm run build).`);
+
+  const runShellToOutput = useCallback(
+    async (label: string, command: string) => {
+      const cwd = workspaceLocalPathResolved;
+      if (!cwd) {
+        toast({
+          title: "Local folder path required",
+          description: "Open a folder with a disk path to run tasks.",
+        });
+        return;
+      }
+      const stamp = new Date().toLocaleTimeString();
+      appendOutput(`[${stamp}] ${label}`);
+      appendOutput(`> ${command}`);
+      setPanelVisible(true);
+      setActivePanelTab("output");
+      try {
+        const result = await runWorkspaceCommand(
+          settings.localServerUrl,
+          cwd,
+          command,
+          5 * 60_000
+        );
+        if (result.stdout?.trim()) appendOutput(result.stdout.replace(/\r\n/g, "\n").trimEnd());
+        if (result.stderr?.trim()) appendOutput(result.stderr.replace(/\r\n/g, "\n").trimEnd());
+        appendOutput(
+          `[${new Date().toLocaleTimeString()}] Exit ${result.exitCode}${result.timedOut ? " (timed out)" : ""}${result.ok ? "" : " — failed"}`
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        appendOutput(`[error] ${message}`);
+        toast({ title: "Task failed", description: message });
+      }
+    },
+    [workspaceLocalPathResolved, settings.localServerUrl, appendOutput]
+  );
+
+  const handleRunNpmScript = useCallback(
+    async (script: string) => {
+      await runShellToOutput(`npm: ${script}`, `npm run ${script}`);
+    },
+    [runShellToOutput]
+  );
+
+  const handleRunBuildTask = useCallback(async () => {
+    if (packageScripts.build) {
+      await handleRunNpmScript("build");
+      return;
+    }
+    if (packageScripts["build:prod"]) {
+      await handleRunNpmScript("build:prod");
+      return;
+    }
+    toast({
+      title: "No build script",
+      description: 'Add a "build" script to package.json, or pick a task from Run → Run Task.',
+    });
     setPanelVisible(true);
     setActivePanelTab("output");
-  }, [appendOutput]);
+  }, [packageScripts, handleRunNpmScript]);
+
+  const handleRunTask = useCallback(() => {
+    const names = Object.keys(packageScripts).sort();
+    if (names.length === 0) {
+      appendOutput(
+        `[${new Date().toLocaleTimeString()}] No npm scripts found. Open a Node project folder, or use Terminal.`
+      );
+      setPanelVisible(true);
+      setActivePanelTab("output");
+      return;
+    }
+    const preferred = names.includes("build")
+      ? "build"
+      : names.includes("test")
+        ? "test"
+        : names.includes("start")
+          ? "start"
+          : names[0]!;
+    const picked =
+      typeof window !== "undefined"
+        ? window.prompt(
+            `Run npm script (${names.join(", ")}):`,
+            preferred
+          )
+        : preferred;
+    if (!picked?.trim()) return;
+    const name = picked.trim();
+    if (!packageScripts[name]) {
+      toast({ title: "Unknown script", description: `"${name}" is not in package.json scripts.` });
+      return;
+    }
+    void handleRunNpmScript(name);
+  }, [packageScripts, appendOutput, handleRunNpmScript]);
+
   const handleOpenGoToFile = useCallback(() => setQuickOpenOpen(true), []);
   const handleOpenGoToLineDialog = useCallback(() => setGoToLineOpen(true), []);
   const handleOpenGoToSymbol = useCallback(() => setGoToSymbolOpen(true), []);
@@ -1844,95 +1937,217 @@ const Index = () => {
     );
   }, [appendDebug, setDebugRunning]);
 
-  const handleStartDebugging = useCallback(async () => {
+  const handleStartDebugging = useCallback(
+    async (configId?: string) => {
+      const cwd = workspaceLocalPathResolved;
+      if (!cwd) {
+        toast({
+          title: "Local folder path required",
+          description: "Open a folder with a disk path to run debug configurations.",
+        });
+        handleShowDebugConsole();
+        return;
+      }
+      const file = openFiles.find((f) => f.id === activeFileId);
+      const rel =
+        file?.relPath ||
+        relPathFromWorkspacePath(file?.path, workspace?.rootName) ||
+        null;
+
+      let configs = debugConfigs;
+      if (configs.length === 0) {
+        configs = await resolveDebugConfigs({
+          localServerUrl: settings.localServerUrl,
+          cwd,
+          fileRel: rel,
+        });
+        setDebugConfigs(configs);
+      }
+
+      const wantId = configId || debugSelectedId || configs[0]?.id;
+      const selected = configs.find((c) => c.id === wantId) || configs[0];
+      if (!selected) {
+        toast({
+          title: "No debug configuration",
+          description: "Open a runnable file (.js/.ts/.py) or add .vscode/launch.json.",
+        });
+        handleShowDebugConsole();
+        return;
+      }
+
+      if (file?.dirty && selected.id === "auto-current-file") {
+        await handleSave();
+      }
+
+      setDebugSelectedId(selected.id);
+      handleShowDebugConsole();
+      clearDebug();
+      setDebugRunning(true);
+      const stamp = new Date().toLocaleTimeString();
+      appendDebug(`[${stamp}] ${selected.name}`);
+      appendDebug(`> ${selected.command}`);
+      try {
+        const result = await runWorkspaceCommand(
+          settings.localServerUrl,
+          cwd,
+          selected.command,
+          5 * 60_000
+        );
+        if (result.stdout?.trim()) appendDebug(result.stdout.replace(/\r\n/g, "\n").trimEnd());
+        if (result.stderr?.trim()) appendDebug(result.stderr.replace(/\r\n/g, "\n").trimEnd());
+        appendDebug(
+          `[${new Date().toLocaleTimeString()}] Exit ${result.exitCode}${result.timedOut ? " (timed out)" : ""}${result.ok ? "" : " — failed"}`
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        appendDebug(`[error] ${message}`);
+        toast({ title: "Debug run failed", description: message });
+      } finally {
+        setDebugRunning(false);
+      }
+    },
+    [
+      workspaceLocalPathResolved,
+      openFiles,
+      activeFileId,
+      workspace?.rootName,
+      debugConfigs,
+      debugSelectedId,
+      settings.localServerUrl,
+      setDebugConfigs,
+      setDebugSelectedId,
+      handleShowDebugConsole,
+      handleSave,
+      clearDebug,
+      setDebugRunning,
+      appendDebug,
+    ]
+  );
+
+  const handleStartDebuggingWithConfig = useCallback(
+    (configId: string) => {
+      void handleStartDebugging(configId);
+    },
+    [handleStartDebugging]
+  );
+
+  const handleRunWithoutDebugging = useCallback(() => {
+    void handleStartDebugging();
+  }, [handleStartDebugging]);
+
+  const handleRestartDebugging = useCallback(() => {
+    setDebugRunning(false);
+    void handleStartDebugging();
+  }, [handleStartDebugging, setDebugRunning]);
+
+  const openLaunchJsonInEditor = useCallback(
+    async (content: string, dirty: boolean) => {
+      const rel = LAUNCH_JSON_REL;
+      const path = workspace?.rootName ? `${workspace.rootName}/${rel}` : rel;
+      const name = "launch.json";
+      const existing = openFiles.find(
+        (f) => f.relPath === rel || f.path === path || f.name === name
+      );
+      if (existing) {
+        setActiveFileId(existing.id);
+        if (dirty) {
+          setOpenFiles((prev) =>
+            prev.map((f) =>
+              f.id === existing.id ? { ...f, content, dirty: true } : f
+            )
+          );
+        }
+        return;
+      }
+      setOpenFiles((prev) => [
+        ...prev,
+        {
+          id: path,
+          name,
+          path,
+          content,
+          relPath: rel,
+          dirty,
+        },
+      ]);
+      setActiveFileId(path);
+    },
+    [workspace?.rootName, openFiles]
+  );
+
+  const handleOpenLaunchConfig = useCallback(async () => {
     const cwd = workspaceLocalPathResolved;
-    if (!cwd) {
+    if (!cwd || !workspace) {
       toast({
-        title: "Local folder path required",
-        description: "Open a folder with a disk path to run debug configurations.",
+        title: "Open a folder first",
+        description: "launch.json lives under the workspace (.vscode/launch.json).",
       });
-      handleShowDebugConsole();
       return;
     }
-    const file = openFiles.find((f) => f.id === activeFileId);
-    const rel =
-      file?.relPath ||
-      relPathFromWorkspacePath(file?.path, workspace?.rootName) ||
-      null;
-
-    let configs = debugConfigs;
-    if (configs.length === 0) {
-      configs = await resolveDebugConfigs({
-        localServerUrl: settings.localServerUrl,
-        cwd,
-        fileRel: rel,
-      });
-      setDebugConfigs(configs);
-      if (configs[0] && !debugSelectedId) setDebugSelectedId(configs[0].id);
-    }
-
-    const selected =
-      configs.find((c) => c.id === (debugSelectedId || configs[0]?.id)) || configs[0];
-    if (!selected) {
-      toast({
-        title: "No debug configuration",
-        description: "Open a runnable file (.js/.ts/.py) or add .vscode/launch.json.",
-      });
-      handleShowDebugConsole();
-      return;
-    }
-
-    if (file?.dirty && selected.id === "auto-current-file") {
-      await handleSave();
-    }
-
-    setDebugSelectedId(selected.id);
-    handleShowDebugConsole();
-    clearDebug();
-    setDebugRunning(true);
-    const stamp = new Date().toLocaleTimeString();
-    appendDebug(`[${stamp}] ${selected.name}`);
-    appendDebug(`> ${selected.command}`);
     try {
-      const result = await runWorkspaceCommand(
-        settings.localServerUrl,
-        cwd,
-        selected.command,
-        5 * 60_000
-      );
-      if (result.stdout?.trim()) appendDebug(result.stdout.replace(/\r\n/g, "\n").trimEnd());
-      if (result.stderr?.trim()) appendDebug(result.stderr.replace(/\r\n/g, "\n").trimEnd());
-      appendDebug(
-        `[${new Date().toLocaleTimeString()}] Exit ${result.exitCode}${result.timedOut ? " (timed out)" : ""}${result.ok ? "" : " — failed"}`
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      appendDebug(`[error] ${message}`);
-      toast({ title: "Debug run failed", description: message });
-    } finally {
-      setDebugRunning(false);
+      const content = await fsReadFile(settings.localServerUrl, cwd, LAUNCH_JSON_REL);
+      await openLaunchJsonInEditor(content, false);
+    } catch {
+      toast({
+        title: "No launch.json yet",
+        description: "Use Add Configuration… to create .vscode/launch.json.",
+      });
+      await openLaunchJsonInEditor(DEFAULT_LAUNCH_JSON, true);
+    }
+  }, [workspaceLocalPathResolved, workspace, settings.localServerUrl, openLaunchJsonInEditor]);
+
+  const handleAddLaunchConfig = useCallback(async () => {
+    const cwd = workspaceLocalPathResolved;
+    if (!cwd || !workspace) {
+      toast({
+        title: "Open a folder first",
+        description: "Need a local workspace path to write .vscode/launch.json.",
+      });
+      return;
+    }
+    let content = DEFAULT_LAUNCH_JSON;
+    let existed = false;
+    try {
+      content = await fsReadFile(settings.localServerUrl, cwd, LAUNCH_JSON_REL);
+      existed = true;
+    } catch {
+      try {
+        await writeWorkspaceFileAtPath(LAUNCH_JSON_REL, DEFAULT_LAUNCH_JSON, {
+          rootHandle: workspace.rootHandle,
+          rootLocalPath: workspace.rootLocalPath ?? cwd,
+          localServerUrl: settings.localServerUrl,
+        });
+        content = DEFAULT_LAUNCH_JSON;
+      } catch (err) {
+        toast({
+          title: "Could not create launch.json",
+          description: err instanceof Error ? err.message : "Write failed.",
+        });
+        await openLaunchJsonInEditor(DEFAULT_LAUNCH_JSON, true);
+        return;
+      }
+    }
+    await openLaunchJsonInEditor(content, !existed);
+    if (!existed) {
+      toast({ title: "Created .vscode/launch.json", description: "Edit configurations, then press F5." });
+    } else {
+      toast({
+        title: "launch.json opened",
+        description: "Add another entry under configurations.",
+      });
     }
   }, [
     workspaceLocalPathResolved,
-    openFiles,
-    activeFileId,
-    workspace?.rootName,
-    debugConfigs,
-    debugSelectedId,
+    workspace,
     settings.localServerUrl,
-    setDebugConfigs,
-    setDebugSelectedId,
-    handleShowDebugConsole,
-    handleSave,
-    clearDebug,
-    setDebugRunning,
-    appendDebug,
+    openLaunchJsonInEditor,
   ]);
 
   useEffect(() => {
     const cwd = workspaceLocalPathResolved;
     if (!cwd) {
       setDebugConfigs([]);
+      setPackageScripts({});
       return;
     }
     const file = openFiles.find((f) => f.id === activeFileId);
@@ -1942,18 +2157,23 @@ const Index = () => {
       null;
     let cancelled = false;
     const t = setTimeout(() => {
-      void resolveDebugConfigs({
-        localServerUrl: settings.localServerUrl,
-        cwd,
-        fileRel: rel,
-      }).then((configs) => {
+      void (async () => {
+        const [configs, scripts] = await Promise.all([
+          resolveDebugConfigs({
+            localServerUrl: settings.localServerUrl,
+            cwd,
+            fileRel: rel,
+          }),
+          loadPackageScripts(settings.localServerUrl, cwd),
+        ]);
         if (cancelled) return;
         setDebugConfigs(configs);
+        setPackageScripts(scripts);
         setDebugSelectedId((prev) => {
           if (prev && configs.some((c) => c.id === prev)) return prev;
           return configs[0]?.id ?? null;
         });
-      });
+      })();
     }, 400);
     return () => {
       cancelled = true;
@@ -1967,6 +2187,7 @@ const Index = () => {
     settings.localServerUrl,
     setDebugConfigs,
     setDebugSelectedId,
+    setPackageScripts,
   ]);
 
   const handleSaveAll = useCallback(async () => {
@@ -2120,7 +2341,17 @@ const Index = () => {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "F5") {
         e.preventDefault();
-        void handleRunActiveFile();
+        void handleRunWithoutDebugging();
+        return;
+      }
+      if (e.key === "F5" && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        handleStopDebugging();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "F5") {
+        e.preventDefault();
+        void handleRestartDebugging();
         return;
       }
       if (e.key === "F5" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
@@ -2172,11 +2403,7 @@ const Index = () => {
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "b") {
         e.preventDefault();
-        appendOutput(
-          `[${new Date().toLocaleTimeString()}] Run Task — use Terminal or run a build script.`
-        );
-        setPanelVisible(true);
-        setActivePanelTab("output");
+        void handleRunBuildTask();
         return;
       }
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
@@ -2251,7 +2478,11 @@ const Index = () => {
     handleMoveLineUp,
     handleMoveLineDown,
     handleRunActiveFile,
+    handleRunWithoutDebugging,
     handleStartDebugging,
+    handleStopDebugging,
+    handleRestartDebugging,
+    handleRunBuildTask,
   ]);
 
   useEffect(() => {
@@ -2305,10 +2536,15 @@ const Index = () => {
       label: "Output: Show",
       run: handleShowOutput,
     },
-    { id: "run-task", label: "Run Task...", shortcut: "Ctrl+Shift+B", run: handleRunTask },
-    { id: "run-active-file", label: "Run Active File", shortcut: "Ctrl+F5", run: () => void handleRunActiveFile() },
+    { id: "run-task", label: "Run Task...", run: handleRunTask },
+    { id: "run-build-task", label: "Run Build Task", shortcut: "Ctrl+Shift+B", run: () => void handleRunBuildTask() },
+    { id: "run-active-file", label: "Run Active File", run: () => void handleRunActiveFile() },
     { id: "start-debugging", label: "Start Debugging", shortcut: "F5", run: () => void handleStartDebugging() },
-    { id: "stop-debugging", label: "Stop Debugging", run: handleStopDebugging },
+    { id: "run-without-debugging", label: "Run Without Debugging", shortcut: "Ctrl+F5", run: () => void handleRunWithoutDebugging() },
+    { id: "stop-debugging", label: "Stop Debugging", shortcut: "Shift+F5", run: handleStopDebugging },
+    { id: "restart-debugging", label: "Restart Debugging", shortcut: "Ctrl+Shift+F5", run: () => void handleRestartDebugging() },
+    { id: "open-launch-config", label: "Open launch.json", run: () => void handleOpenLaunchConfig() },
+    { id: "add-launch-config", label: "Add Configuration...", run: () => void handleAddLaunchConfig() },
     { id: "show-debug-console", label: "Debug Console: Show", run: handleShowDebugConsole },
     { id: "show-problems", label: "Problems: Show", shortcut: "Ctrl+Shift+M", run: handleShowProblems },
   ];
@@ -2569,9 +2805,16 @@ const Index = () => {
     showOutput: handleShowOutput,
     showProblems: handleShowProblems,
     runTask: handleRunTask,
+    runBuildTask: () => void handleRunBuildTask(),
+    runNpmScript: (script: string) => void handleRunNpmScript(script),
     runActiveFile: () => void handleRunActiveFile(),
+    runWithoutDebugging: () => void handleRunWithoutDebugging(),
     startDebugging: () => void handleStartDebugging(),
+    startDebuggingWithConfig: handleStartDebuggingWithConfig,
+    restartDebugging: () => void handleRestartDebugging(),
     stopDebugging: handleStopDebugging,
+    openLaunchConfig: () => void handleOpenLaunchConfig(),
+    addLaunchConfig: () => void handleAddLaunchConfig(),
     showDebugConsole: handleShowDebugConsole,
     openGoToFile: handleOpenGoToFile,
     openGoToLineDialog: handleOpenGoToLineDialog,

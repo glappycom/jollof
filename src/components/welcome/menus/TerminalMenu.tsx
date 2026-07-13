@@ -8,8 +8,9 @@ const TerminalMenu = () => {
       <MenuItem label="New Terminal" shortcut="Ctrl+Shift+`" onClick={actions?.newTerminal} />
       <MenuItem label="Split Terminal" shortcut="Ctrl+Shift+5" onClick={actions?.newTerminal} />
       <MenuSeparator />
-      <MenuItem label="Run Active File" shortcut="Ctrl+F5" onClick={actions?.runActiveFile} />
-      <MenuItem label="Run Task..." shortcut="Ctrl+Shift+B" onClick={actions?.runTask} />
+      <MenuItem label="Run Active File" onClick={actions?.runActiveFile} />
+      <MenuItem label="Run Task..." onClick={actions?.runTask} />
+      <MenuItem label="Run Build Task" shortcut="Ctrl+Shift+B" onClick={actions?.runBuildTask} />
     </div>
   );
 };

@@ -32,12 +32,26 @@ export interface EditorActions {
   showProblems: () => void;
   /** Run menu */
   runTask: () => void;
+  /** Prefer npm run build, else prompt / first script */
+  runBuildTask?: () => void;
+  /** Run a specific package.json script */
+  runNpmScript?: (script: string) => void;
   /** Run the active editor file (JS/TS/Python) via local server. */
   runActiveFile: () => void;
+  /** Run selected launch config without treating it as a debug session label-wise */
+  runWithoutDebugging?: () => void;
   /** Start selected debug configuration (F5). */
   startDebugging?: () => void;
-  /** Mark debug session stopped (process is fire-and-forget via /api/run). */
+  /** Start a specific config by id */
+  startDebuggingWithConfig?: (configId: string) => void;
+  /** Stop then start again */
+  restartDebugging?: () => void;
+  /** Mark debug session stopped */
   stopDebugging?: () => void;
+  /** Open or create .vscode/launch.json */
+  openLaunchConfig?: () => void;
+  /** Ensure launch.json exists with a template, then open it */
+  addLaunchConfig?: () => void;
   /** Show Debug Console panel */
   showDebugConsole?: () => void;
   /** Go menu */
